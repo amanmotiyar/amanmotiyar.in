@@ -600,6 +600,26 @@
     return out;
   }
 
+  function computeReserveTimeline(a){
+    var reserve = state.forecast.reserve;
+    var parts = (reserve.openingDate || (FORECAST_START.y + "-0" + FORECAST_START.m)).split("-");
+    var start = clampToGlobal(parseInt(parts[0],10), parseInt(parts[1],10));
+    var months = generateForecastMonths({ start:start, end:FORECAST_END }, a);
+    var balance = reserve.openingBalance;
+    var timeline = [];
+    months.forEach(function(mo){
+      var opening = balance;
+      var surplus = mo.cashRemaining; // netCashIncome - recurringExpenses - scheduledBills, already computed once
+      var closing = opening + surplus;
+      timeline.push({
+        year:mo.year, month:mo.month, opening:opening, income:mo.netCashIncome,
+        expenses:mo.recurringExpenses, bills:mo.scheduledBills, surplus:surplus, closing:closing
+      });
+      balance = closing;
+    });
+    return timeline;
+  }
+
   function defaultState(){
     var domains = {};
     DOMAIN_DEFS.forEach(function(d){
@@ -611,7 +631,8 @@
       reviews: [],
       profile: { photo:"", fullName:"", phone:"", email:"", city:"", linkedin:"", emergencyContact:"", bloodGroup:"", dob:"" },
       finance: { currentFY: computeCurrentFY(), targetSavingsRate: 20, fy: {} },
-      forecast: { assumptions: defaultForecastAssumptions(), rangeMode: "fy", selectedFY: "2026-27", customStart: "2026-09", customEnd: "2027-03" }
+      forecast: { assumptions: defaultForecastAssumptions(), rangeMode: "fy", selectedFY: "2026-27", customStart: "2026-09", customEnd: "2027-03",
+        reserve: { openingBalance: 0, openingDate: "2026-09", minReserveTarget: 0 } }
     };
   }
   function loadState(){
@@ -635,6 +656,11 @@
         if(parsed.forecast.selectedFY) base.forecast.selectedFY = parsed.forecast.selectedFY;
         if(parsed.forecast.customStart) base.forecast.customStart = parsed.forecast.customStart;
         if(parsed.forecast.customEnd) base.forecast.customEnd = parsed.forecast.customEnd;
+        if(parsed.forecast.reserve){
+          if(parsed.forecast.reserve.openingBalance !== undefined) base.forecast.reserve.openingBalance = parsed.forecast.reserve.openingBalance;
+          if(parsed.forecast.reserve.openingDate) base.forecast.reserve.openingDate = parsed.forecast.reserve.openingDate;
+          if(parsed.forecast.reserve.minReserveTarget !== undefined) base.forecast.reserve.minReserveTarget = parsed.forecast.reserve.minReserveTarget;
+        }
       }
       return base;
     }catch(e){ console.error("load failed", e); return defaultState(); }
@@ -1141,6 +1167,58 @@
     view.appendChild(resultsContainer);
     renderForecastResultsInto(resultsContainer);
 
+    /* cash reserve & monthly plan */
+    var reserve = fc.reserve;
+    var reserveSection = document.createElement("div");
+    reserveSection.className = "fin-section";
+    reserveSection.innerHTML = '<h2 class="sec-title">Cash Reserve &amp; Monthly Plan</h2>';
+
+    var reserveHeader = document.createElement("div");
+    reserveHeader.className = "fin-header";
+    var reserveControls = document.createElement("div");
+    reserveControls.className = "fin-controls";
+
+    var obCtl = document.createElement("div");
+    obCtl.className = "fin-ctl"; obCtl.innerHTML = "<label>Opening cash balance</label>";
+    var obInput = document.createElement("input");
+    obInput.type = "number"; obInput.className = "fin-target-input"; obInput.style.width = "150px";
+    obInput.value = reserve.openingBalance;
+    obInput.addEventListener("input", function(){ reserve.openingBalance = parseFloat(obInput.value) || 0; scheduleSave(); refreshForecastResults(); });
+    obCtl.appendChild(obInput); reserveControls.appendChild(obCtl);
+
+    var odCtl = document.createElement("div");
+    odCtl.className = "fin-ctl"; odCtl.innerHTML = "<label>As of</label>";
+    var odInput = document.createElement("input");
+    odInput.type = "month"; odInput.className = "fin-select";
+    odInput.min = FORECAST_START.y + "-" + (FORECAST_START.m < 10 ? "0" : "") + FORECAST_START.m;
+    odInput.max = FORECAST_END.y + "-" + (FORECAST_END.m < 10 ? "0" : "") + FORECAST_END.m;
+    odInput.value = reserve.openingDate;
+    odInput.addEventListener("change", function(){ reserve.openingDate = odInput.value; scheduleSave(); refreshForecastResults(); });
+    odCtl.appendChild(odInput); reserveControls.appendChild(odCtl);
+
+    var mtCtl = document.createElement("div");
+    mtCtl.className = "fin-ctl"; mtCtl.innerHTML = "<label>Minimum reserve target</label>";
+    var mtInput = document.createElement("input");
+    mtInput.type = "number"; mtInput.className = "fin-target-input"; mtInput.style.width = "150px";
+    mtInput.value = reserve.minReserveTarget;
+    mtInput.addEventListener("input", function(){ reserve.minReserveTarget = parseFloat(mtInput.value) || 0; scheduleSave(); refreshForecastResults(); });
+    mtCtl.appendChild(mtInput); reserveControls.appendChild(mtCtl);
+
+    reserveHeader.appendChild(reserveControls);
+    reserveSection.appendChild(reserveHeader);
+
+    var reserveNote = document.createElement("p");
+    reserveNote.className = "empty";
+    reserveNote.style.marginBottom = "18px";
+    reserveNote.textContent = "Private to this browser \u2014 never stored in the app's source or Git. Each month's closing balance carries forward as the next month's opening balance, starting from the date above.";
+    reserveSection.appendChild(reserveNote);
+
+    var reserveResults = document.createElement("div");
+    reserveResults.id = "reserveResults";
+    reserveSection.appendChild(reserveResults);
+    view.appendChild(reserveSection);
+    renderReserveResultsInto(reserveResults);
+
     /* assumptions panel (collapsible) */
     var assumeSection = document.createElement("div");
     assumeSection.className = "fin-section";
@@ -1167,6 +1245,83 @@
   function refreshForecastResults(){
     var container = document.getElementById("forecastResults");
     if(container) renderForecastResultsInto(container);
+    var reserveContainer = document.getElementById("reserveResults");
+    if(reserveContainer) renderReserveResultsInto(reserveContainer);
+  }
+
+  function renderReserveResultsInto(container){
+    container.innerHTML = "";
+    var a = state.forecast.assumptions;
+    var reserve = state.forecast.reserve;
+    var range = currentForecastRange();
+    var timeline = computeReserveTimeline(a);
+    var displayed = timeline.filter(function(t){
+      return ymCompare(t.year, t.month, range.start.y, range.start.m) >= 0 &&
+             ymCompare(t.year, t.month, range.end.y, range.end.m) <= 0;
+    });
+
+    if(!displayed.length){
+      var parts = (reserve.openingDate || "").split("-");
+      var odY = parseInt(parts[0],10), odM = parseInt(parts[1],10);
+      var msg = document.createElement("p");
+      msg.className = "empty";
+      msg.textContent = "The selected range is entirely before your opening balance date (" + ymLabel(odY, odM) + "). Choose a range on or after that month to see the running plan.";
+      container.appendChild(msg);
+      return;
+    }
+
+    var openingOfRange = displayed[0].opening;
+    var closingOfRange = displayed[displayed.length - 1].closing;
+    var lowestClosing = displayed.reduce(function(a,b){ return b.closing < a.closing ? b : a; });
+    var lowestVsTarget = displayed.reduce(function(a,b){ return (b.closing - reserve.minReserveTarget) < (a.closing - reserve.minReserveTarget) ? b : a; });
+    var negativeMonths = displayed.filter(function(t){ return t.closing < 0; }).length;
+    var belowTargetMonths = displayed.filter(function(t){ return t.closing < reserve.minReserveTarget; }).length;
+
+    var summary = document.createElement("div");
+    summary.className = "fin-summary";
+    [
+      ["Opening balance (start of view)", fmtINR(openingOfRange)],
+      ["Closing balance (end of view)", fmtINR(closingOfRange)],
+      ["Lowest closing balance", fmtINR(lowestClosing.closing) + " (" + ymLabel(lowestClosing.year, lowestClosing.month) + ")"],
+      ["Lowest vs. target", fmtINR(lowestVsTarget.closing - reserve.minReserveTarget) + " (" + ymLabel(lowestVsTarget.year, lowestVsTarget.month) + ")"],
+      ["Months with negative balance", negativeMonths + " of " + displayed.length],
+      ["Months below target", belowTargetMonths + " of " + displayed.length]
+    ].forEach(function(c){
+      var card = document.createElement("div");
+      card.className = "fin-card";
+      card.innerHTML = '<div class="fc-label">' + c[0] + '</div><div class="fc-value">' + c[1] + '</div>';
+      summary.appendChild(card);
+    });
+    container.appendChild(summary);
+
+    var tableWrap = document.createElement("div");
+    tableWrap.className = "fin-table-wrap";
+    var table = document.createElement("table");
+    table.className = "fin-table";
+    table.innerHTML =
+      '<thead><tr><th>Month</th><th>Opening Balance</th><th>Net Cash Income</th><th>Recurring Exp.</th>' +
+      '<th>Scheduled Bills</th><th>Surplus / Shortfall</th><th>Closing Balance</th><th>vs. Target</th></tr></thead>';
+    var tbody = document.createElement("tbody");
+    displayed.forEach(function(t){
+      var row = document.createElement("tr");
+      row.className = "fin-row";
+      var vsTarget = t.closing - reserve.minReserveTarget;
+      if(t.closing < 0) row.style.background = "rgba(228,120,143,0.14)";
+      else if(vsTarget < 0) row.style.background = "rgba(232,199,102,0.10)";
+      row.innerHTML =
+        "<td>" + ymLabel(t.year, t.month) + "</td>" +
+        "<td>" + fmtINRz(t.opening) + "</td>" +
+        "<td>" + fmtINRz(t.income) + "</td>" +
+        "<td>" + fmtINRz(t.expenses) + "</td>" +
+        "<td>" + fmtINRz(t.bills) + "</td>" +
+        "<td>" + fmtINRz(t.surplus) + "</td>" +
+        '<td style="color:' + (t.closing < 0 ? FINANCE_NEGATIVE_COLOR : "inherit") + '; font-weight:' + (t.closing < 0 ? "700" : "400") + ';">' + fmtINRz(t.closing) + "</td>" +
+        '<td style="color:' + (vsTarget < 0 ? FINANCE_ATTENTION_COLOR : "inherit") + ';">' + fmtINRz(vsTarget) + "</td>";
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    container.appendChild(tableWrap);
   }
 
   function renderForecastResultsInto(container){
@@ -1869,6 +2024,11 @@
           if(parsed.forecast.selectedFY) base.forecast.selectedFY = parsed.forecast.selectedFY;
           if(parsed.forecast.customStart) base.forecast.customStart = parsed.forecast.customStart;
           if(parsed.forecast.customEnd) base.forecast.customEnd = parsed.forecast.customEnd;
+          if(parsed.forecast.reserve){
+            if(parsed.forecast.reserve.openingBalance !== undefined) base.forecast.reserve.openingBalance = parsed.forecast.reserve.openingBalance;
+            if(parsed.forecast.reserve.openingDate) base.forecast.reserve.openingDate = parsed.forecast.reserve.openingDate;
+            if(parsed.forecast.reserve.minReserveTarget !== undefined) base.forecast.reserve.minReserveTarget = parsed.forecast.reserve.minReserveTarget;
+          }
         }
         state = base;
         scheduleSave(); renderMain();
