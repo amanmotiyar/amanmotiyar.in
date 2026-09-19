@@ -191,6 +191,13 @@
 
   /* finance */
   .fin-header{ display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:18px; margin-bottom:28px; }
+  .fin-mode-toggle{ display:flex; gap:6px; margin-bottom:28px; }
+  .fin-mode-toggle button{
+    background:var(--bg-2); border:1px solid var(--line); color:var(--muted);
+    border-radius:20px; padding:8px 16px; font-size:12px; cursor:pointer; transition:all .2s ease;
+  }
+  .fin-mode-toggle button.on{ background:var(--gold); color:#1B140A; border-color:transparent; font-weight:700; }
+  .fin-mode-toggle button:hover:not(.on){ border-color:var(--gold); color:var(--ink); }
   .fin-controls{ display:flex; align-items:flex-end; gap:22px; flex-wrap:wrap; }
   .fin-ctl label{ display:block; font-family:'JetBrains Mono', monospace; font-size:10px; color:var(--faint); margin-bottom:6px; }
   .fin-select, .fin-target-input{
@@ -213,8 +220,7 @@
   .fin-edit-btn{ background:none; border:1px solid var(--line); color:var(--gold-2); border-radius:16px; padding:4px 13px; font-size:11px; cursor:pointer; }
   .fin-edit-btn:hover{ background:var(--gold); color:#1B140A; }
   tr.fin-edit-row td{ border-bottom:1px solid var(--line); padding:22px 16px 28px; background:var(--bg-2); white-space:normal; }
-  .fin-groups{ display:grid; grid-template-columns:repeat(3,1fr); gap:26px; margin-bottom:18px; }
-  @media (max-width:900px){ .fin-groups{ grid-template-columns:1fr; } }
+  .fin-groups{ display:grid; grid-template-columns:repeat(auto-fit, minmax(210px,1fr)); gap:26px; margin-bottom:18px; }
   .fin-group h4{ font-family:'JetBrains Mono', monospace; font-size:10.5px; color:var(--faint); margin:0 0 10px; letter-spacing:0.05em; }
   .fin-group .fg-row{ display:flex; justify-content:space-between; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--line); }
   .fin-group .fg-row label{ font-size:12px; color:var(--muted); }
@@ -332,7 +338,10 @@
     ["interest","Interest Income"], ["rental","Rental Income"], ["otherIncome","Other Income"]
   ];
   var DEDUCTION_FIELDS = [
-    ["taxTds","Tax / TDS"], ["pfNps","PF / NPS"], ["otherDeductions","Other Deductions"]
+    ["taxTds","Tax / TDS"], ["otherDeductions","Other Deductions"]
+  ];
+  var INVESTMENT_FIELDS = [
+    ["pf","PF"], ["nps","NPS"]
   ];
   var EXPENSE_FIELDS = [
     ["rent","Rent / Housing"], ["electricity","Electricity"], ["internet","Internet / Mobile"],
@@ -370,7 +379,7 @@
 
   function newMonthObj(){
     var o = {};
-    INCOME_FIELDS.concat(DEDUCTION_FIELDS).concat(EXPENSE_FIELDS).forEach(function(f){ o[f[0]] = 0; });
+    INCOME_FIELDS.concat(DEDUCTION_FIELDS).concat(INVESTMENT_FIELDS).concat(EXPENSE_FIELDS).forEach(function(f){ o[f[0]] = 0; });
     o.notes = "";
     return o;
   }
@@ -382,21 +391,26 @@
   function monthTotals(m){
     var gross = sumFields(m, INCOME_FIELDS);
     var ded = sumFields(m, DEDUCTION_FIELDS);
-    var net = gross - ded;
+    var inv = sumFields(m, INVESTMENT_FIELDS);
+    var net = gross - ded - inv;
     var exp = sumFields(m, EXPENSE_FIELDS);
     var sav = net - exp;
+    var wealth = sav + inv;
     var rate = net !== 0 ? (sav / net * 100) : 0;
-    return { gross:gross, ded:ded, net:net, exp:exp, sav:sav, rate:rate };
+    var wrate = gross !== 0 ? (wealth / gross * 100) : 0;
+    return { gross:gross, ded:ded, inv:inv, net:net, exp:exp, sav:sav, wealth:wealth, rate:rate, wrate:wrate };
   }
   function fyAggregate(fy){
     ensureFYData(fy);
     var months = state.finance.fy[fy].months;
-    var agg = { gross:0, ded:0, net:0, exp:0, sav:0 };
+    var agg = { gross:0, ded:0, inv:0, net:0, exp:0, sav:0, wealth:0 };
     MONTHS.forEach(function(mo){
       var t = monthTotals(months[mo]);
-      agg.gross += t.gross; agg.ded += t.ded; agg.net += t.net; agg.exp += t.exp; agg.sav += t.sav;
+      agg.gross += t.gross; agg.ded += t.ded; agg.inv += t.inv; agg.net += t.net;
+      agg.exp += t.exp; agg.sav += t.sav; agg.wealth += t.wealth;
     });
     agg.rate = agg.net !== 0 ? (agg.sav / agg.net * 100) : 0;
+    agg.wrate = agg.gross !== 0 ? (agg.wealth / agg.gross * 100) : 0;
     return agg;
   }
   function financeStatus(){
@@ -411,6 +425,158 @@
     return level === "steady" ? FINANCE_ACCENT : level === "attention" ? FINANCE_ATTENTION_COLOR : FINANCE_NEGATIVE_COLOR;
   }
 
+  /* ---------------- forecast: constants & assumptions ---------------- */
+
+  var FORECAST_START = { y:2026, m:9 };
+  var FORECAST_END = { y:2032, m:6 };
+  var EMI_KEYS = ["personalLoan","axisEmi","carEmi","landLoanEmi"];
+  var ANNUAL_BILL_KEYS = ["healthInsurance","carInsurance","schoolFeesFeb","schoolFeesJun","schoolFeesOct"];
+  var MONTH_NAMES = ["","January","February","March","April","May","June","July","August","September","October","November","December"];
+
+  function defaultForecastAssumptions(){
+    return {
+      grossSalary: 220000, incomeTax: 30000, pf: 9500, nps: 10000,
+      bonusPercent: 5, bonusTaxPercent: 30,
+      rentBeforeDec2026: 25000, rentFromDec2026: 26500, rentIncreasePercent: 10,
+      milkPerDay: 76, groceries: 4000, vegFruits: 3500, amazonPayLater: 2500,
+      electricity: 3000, fuel: 2500, lifeInsurance: 3000, mobile: 1000,
+      onlineShoppingFood: 5000, maid: 1200, carWash: 900, stationery: 1500,
+      subscriptions: 4000, misc: 5000,
+      emis: {
+        personalLoan: { label:"Personal loan EMI", amount:10000, endYear:2027, endMonth:8 },
+        axisEmi:      { label:"Axis EMI",           amount:10000, endYear:2027, endMonth:8 },
+        carEmi:       { label:"Car EMI",             amount:20000, endYear:2027, endMonth:10 },
+        landLoanEmi:  { label:"Land loan EMI",       amount:55000, endYear:2032, endMonth:6 }
+      },
+      annualBills: {
+        healthInsurance: { label:"Health insurance", month:4,  amount:20000 },
+        carInsurance:    { label:"Car insurance",     month:7,  amount:25000 },
+        schoolFeesFeb:   { label:"School fees (Feb)", month:2,  amount:10000 },
+        schoolFeesJun:   { label:"School fees (Jun)", month:6,  amount:15000 },
+        schoolFeesOct:   { label:"School fees (Oct)", month:10, amount:25000 }
+      }
+    };
+  }
+
+  function mergeForecastAssumptions(base, incoming){
+    Object.keys(base).forEach(function(k){
+      if(k === "emis" || k === "annualBills") return;
+      if(incoming[k] !== undefined) base[k] = incoming[k];
+    });
+    if(incoming.emis){
+      EMI_KEYS.forEach(function(k){
+        if(incoming.emis[k]){
+          if(incoming.emis[k].amount !== undefined) base.emis[k].amount = incoming.emis[k].amount;
+          if(incoming.emis[k].endYear !== undefined) base.emis[k].endYear = incoming.emis[k].endYear;
+          if(incoming.emis[k].endMonth !== undefined) base.emis[k].endMonth = incoming.emis[k].endMonth;
+        }
+      });
+    }
+    if(incoming.annualBills){
+      ANNUAL_BILL_KEYS.forEach(function(k){
+        if(incoming.annualBills[k]){
+          if(incoming.annualBills[k].month !== undefined) base.annualBills[k].month = incoming.annualBills[k].month;
+          if(incoming.annualBills[k].amount !== undefined) base.annualBills[k].amount = incoming.annualBills[k].amount;
+        }
+      });
+    }
+  }
+
+  function daysInMonth(y,m){ return new Date(y, m, 0).getDate(); }
+  function ymCompare(y1,m1,y2,m2){ return (y1*12+m1) - (y2*12+m2); }
+  function ymLabel(y,m){ return MONTH_NAMES[m].slice(0,3) + " " + y; }
+
+  function forecastRentForMonth(y,m,a){
+    if(y < 2026 || (y === 2026 && m < 12)) return a.rentBeforeDec2026;
+    var effYear = (m >= 12) ? y : y - 1;
+    if(effYear < 2027) return a.rentFromDec2026;
+    var bumps = effYear - 2026;
+    return Math.round(a.rentFromDec2026 * Math.pow(1 + a.rentIncreasePercent / 100, bumps));
+  }
+
+  function computeForecastMonth(y, m, a){
+    var days = daysInMonth(y,m);
+    var milk = a.milkPerDay * days;
+    var rent = forecastRentForMonth(y,m,a);
+    var fixedOthers = a.groceries + a.vegFruits + a.amazonPayLater + a.electricity + a.fuel +
+      a.lifeInsurance + a.mobile + a.onlineShoppingFood + a.maid + a.carWash + a.stationery +
+      a.subscriptions + a.misc;
+
+    var emiTotal = 0; var activeEmis = [];
+    EMI_KEYS.forEach(function(k){
+      var emi = a.emis[k];
+      if(ymCompare(y,m, emi.endYear, emi.endMonth) <= 0){ emiTotal += emi.amount; activeEmis.push(k); }
+    });
+
+    var recurringExpenses = rent + milk + fixedOthers + emiTotal;
+
+    var scheduledBills = 0; var billsDue = [];
+    ANNUAL_BILL_KEYS.forEach(function(k){
+      var b = a.annualBills[k];
+      if(b.month === m){ scheduledBills += b.amount; billsDue.push(k); }
+    });
+
+    var totalOutflow = recurringExpenses + scheduledBills;
+
+    var grossBonus = 0, bonusTax = 0, netBonus = 0;
+    if(m === 12){
+      grossBonus = a.grossSalary * 12 * (a.bonusPercent / 100);
+      bonusTax = grossBonus * (a.bonusTaxPercent / 100);
+      netBonus = grossBonus - bonusTax;
+    }
+    var netCashIncome = a.grossSalary + grossBonus - a.incomeTax - bonusTax - a.pf - a.nps;
+    var cashRemaining = netCashIncome - totalOutflow;
+
+    return {
+      year:y, month:m, days:days,
+      grossSalary:a.grossSalary, grossBonus:grossBonus, netBonus:netBonus, regularTax:a.incomeTax, bonusTax:bonusTax,
+      pf:a.pf, nps:a.nps, netCashIncome:netCashIncome,
+      rent:rent, milk:milk, fixedOthers:fixedOthers, emiTotal:emiTotal, activeEmis:activeEmis,
+      recurringExpenses:recurringExpenses, scheduledBills:scheduledBills, billsDue:billsDue,
+      totalOutflow:totalOutflow, cashRemaining:cashRemaining
+    };
+  }
+
+  function clampToGlobal(y,m){
+    if(ymCompare(y,m, FORECAST_START.y, FORECAST_START.m) < 0) return { y:FORECAST_START.y, m:FORECAST_START.m };
+    if(ymCompare(y,m, FORECAST_END.y, FORECAST_END.m) > 0) return { y:FORECAST_END.y, m:FORECAST_END.m };
+    return { y:y, m:m };
+  }
+
+  function forecastFYOptions(){
+    var opts = [];
+    for(var y = FORECAST_START.y; y <= FORECAST_END.y; y++){ opts.push(fyLabel(y)); }
+    return opts;
+  }
+
+  function forecastRangeForFY(fy){
+    var startYear = parseInt(fy.split("-")[0], 10);
+    var s = clampToGlobal(startYear, 4);
+    var e = clampToGlobal(startYear + 1, 3);
+    return { start:s, end:e };
+  }
+
+  function currentForecastRange(){
+    var fc = state.forecast;
+    if(fc.rangeMode === "custom"){
+      var sp = fc.customStart.split("-"); var ep = fc.customEnd.split("-");
+      var s = clampToGlobal(parseInt(sp[0],10), parseInt(sp[1],10));
+      var e = clampToGlobal(parseInt(ep[0],10), parseInt(ep[1],10));
+      if(ymCompare(s.y,s.m,e.y,e.m) > 0) e = s;
+      return { start:s, end:e };
+    }
+    return forecastRangeForFY(fc.selectedFY);
+  }
+
+  function generateForecastMonths(range, a){
+    var out = []; var y = range.start.y, m = range.start.m;
+    while(ymCompare(y,m, range.end.y, range.end.m) <= 0){
+      out.push(computeForecastMonth(y,m,a));
+      m++; if(m > 12){ m = 1; y++; }
+    }
+    return out;
+  }
+
   function defaultState(){
     var domains = {};
     DOMAIN_DEFS.forEach(function(d){
@@ -421,7 +587,8 @@
       domains: domains,
       reviews: [],
       profile: { photo:"", fullName:"", phone:"", email:"", city:"", linkedin:"", emergencyContact:"", bloodGroup:"", dob:"" },
-      finance: { currentFY: computeCurrentFY(), targetSavingsRate: 20, fy: {} }
+      finance: { currentFY: computeCurrentFY(), targetSavingsRate: 20, fy: {} },
+      forecast: { assumptions: defaultForecastAssumptions(), rangeMode: "fy", selectedFY: "2026-27", customStart: "2026-09", customEnd: "2027-03" }
     };
   }
   function loadState(){
@@ -437,6 +604,13 @@
         base.finance.currentFY = parsed.finance.currentFY || base.finance.currentFY;
         base.finance.targetSavingsRate = (parsed.finance.targetSavingsRate !== undefined) ? parsed.finance.targetSavingsRate : base.finance.targetSavingsRate;
         base.finance.fy = parsed.finance.fy || {};
+      }
+      if(parsed.forecast){
+        if(parsed.forecast.assumptions) mergeForecastAssumptions(base.forecast.assumptions, parsed.forecast.assumptions);
+        if(parsed.forecast.rangeMode) base.forecast.rangeMode = parsed.forecast.rangeMode;
+        if(parsed.forecast.selectedFY) base.forecast.selectedFY = parsed.forecast.selectedFY;
+        if(parsed.forecast.customStart) base.forecast.customStart = parsed.forecast.customStart;
+        if(parsed.forecast.customEnd) base.forecast.customEnd = parsed.forecast.customEnd;
       }
       return base;
     }catch(e){ console.error("load failed", e); return defaultState(); }
@@ -526,12 +700,12 @@
     main.innerHTML = "";
     var view = document.createElement("div");
     view.className = "view";
+    main.appendChild(view);
     if(activeTab === "overview") buildOverview(view);
     else if(activeTab === "review") buildReview(view);
     else if(activeTab === "profile") buildProfile(view);
     else if(activeTab === "finance") buildFinance(view);
     else buildDomain(view, activeTab);
-    main.appendChild(view);
   }
 
   function greeting(){
@@ -704,14 +878,36 @@
 
   /* ---------------- finance ---------------- */
 
+  var financeMode = "actual";
+
   function buildFinance(view){
+    view.innerHTML =
+      '<div class="focus-eyebrow">FINANCE &middot; EMERALD</div>' +
+      '<div class="focus-title" style="font-size:36px; margin-bottom:10px;">Monthly fiscal-year tracker</div>';
+
+    var modeToggle = document.createElement("div");
+    modeToggle.className = "fin-mode-toggle";
+    [["actual","Actual"], ["forecast","Budget & Cash-Flow Forecast"]].forEach(function(pair){
+      var btn = document.createElement("button");
+      btn.type = "button"; btn.textContent = pair[1];
+      if(financeMode === pair[0]) btn.classList.add("on");
+      btn.addEventListener("click", function(){
+        if(financeMode === pair[0]) return;
+        financeMode = pair[0];
+        renderMain();
+      });
+      modeToggle.appendChild(btn);
+    });
+    view.appendChild(modeToggle);
+
+    if(financeMode === "forecast") buildFinanceForecast(view);
+    else buildFinanceActual(view);
+  }
+
+  function buildFinanceActual(view){
     var fy = state.finance.currentFY;
     ensureFYData(fy);
     var monthsData = state.finance.fy[fy].months;
-
-    view.innerHTML =
-      '<div class="focus-eyebrow">FINANCE &middot; EMERALD</div>' +
-      '<div class="focus-title" style="font-size:36px; margin-bottom:22px;">Monthly fiscal-year tracker</div>';
 
     var header = document.createElement("div");
     header.className = "fin-header";
@@ -762,8 +958,8 @@
     var summary = document.createElement("div");
     summary.className = "fin-summary";
     var cards = [
-      ["gross","Gross Income"], ["ded","Tax / Deductions"], ["net","Net Income"],
-      ["exp","Total Expenses"], ["sav","Total Savings"], ["rate","Savings Rate"]
+      ["gross","Gross Income"], ["ded","Tax / Deductions"], ["inv","Income Investments"], ["net","Net Cash Income"],
+      ["exp","Total Expenses"], ["sav","Cash Savings"], ["rate","Savings Rate"], ["wrate","Wealth Allocation Rate"]
     ];
     cards.forEach(function(c){
       var card = document.createElement("div");
@@ -778,8 +974,11 @@
     var table = document.createElement("table");
     table.className = "fin-table";
     table.innerHTML =
-      '<thead><tr><th>Month</th><th>Gross Income</th><th>Tax / Deductions</th><th>Net Income</th><th>Expenses</th><th>Savings</th><th>Savings Rate</th><th></th></tr></thead>';
+      '<thead><tr><th>Month</th><th>Gross Income</th><th>Tax / Deductions</th><th>Income Investments</th><th>Net Cash Income</th><th>Expenses</th><th>Cash Savings</th><th>Savings Rate</th><th></th></tr></thead>';
     var tbody = document.createElement("tbody");
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    view.appendChild(tableWrap);
 
     MONTHS.forEach(function(mo){
       var monthObj = monthsData[mo];
@@ -789,6 +988,7 @@
         '<td>' + mo + '</td>' +
         '<td id="fin-cell-' + mo + '-gross">\u2014</td>' +
         '<td id="fin-cell-' + mo + '-ded">\u2014</td>' +
+        '<td id="fin-cell-' + mo + '-inv">\u2014</td>' +
         '<td id="fin-cell-' + mo + '-net">\u2014</td>' +
         '<td id="fin-cell-' + mo + '-exp">\u2014</td>' +
         '<td id="fin-cell-' + mo + '-sav">\u2014</td>' +
@@ -804,7 +1004,7 @@
       editRow.id = "fin-edit-" + mo;
       editRow.style.display = "none";
       var editCell = document.createElement("td");
-      editCell.colSpan = 8;
+      editCell.colSpan = 9;
       editCell.appendChild(buildMonthEditForm(mo, monthObj, fy));
       editRow.appendChild(editCell);
       tbody.appendChild(editRow);
@@ -818,10 +1018,6 @@
 
       updateMonthRow(mo, fy);
     });
-
-    table.appendChild(tbody);
-    tableWrap.appendChild(table);
-    view.appendChild(tableWrap);
 
     var breakdownSection = document.createElement("div");
     breakdownSection.className = "fin-section";
@@ -839,6 +1035,335 @@
 
     updateSummary(fy);
     updateBadge(fy);
+  }
+
+  /* ---------------- forecast: rendering ---------------- */
+
+  var forecastAssumptionsOpen = false;
+  var forecastOpenMonthKey = null;
+
+  function buildFinanceForecast(view){
+    var fc = state.forecast;
+    var a = fc.assumptions;
+
+    var intro = document.createElement("p");
+    intro.className = "hero-loop";
+    intro.style.marginBottom = "24px";
+    intro.textContent = "Projected, editable figures \u2014 separate from your actual monthly records above. Forecast runs " + ymLabel(FORECAST_START.y, FORECAST_START.m) + " through " + ymLabel(FORECAST_END.y, FORECAST_END.m) + " (land loan payoff).";
+    view.appendChild(intro);
+
+    /* range selector */
+    var rangeHeader = document.createElement("div");
+    rangeHeader.className = "fin-header";
+    var rangeControls = document.createElement("div");
+    rangeControls.className = "fin-controls";
+
+    var modeCtl = document.createElement("div");
+    modeCtl.className = "fin-ctl";
+    modeCtl.innerHTML = "<label>View by</label>";
+    var modeSel = document.createElement("select");
+    modeSel.className = "fin-select";
+    [["fy","Financial year"], ["custom","Custom range"]].forEach(function(p){
+      var o = document.createElement("option"); o.value = p[0]; o.textContent = p[1];
+      if(fc.rangeMode === p[0]) o.selected = true;
+      modeSel.appendChild(o);
+    });
+    modeSel.addEventListener("change", function(){ fc.rangeMode = modeSel.value; scheduleSave(); renderMain(); });
+    modeCtl.appendChild(modeSel);
+    rangeControls.appendChild(modeCtl);
+
+    if(fc.rangeMode === "custom"){
+      var startCtl = document.createElement("div");
+      startCtl.className = "fin-ctl"; startCtl.innerHTML = "<label>From</label>";
+      var startInput = document.createElement("input");
+      startInput.type = "month"; startInput.className = "fin-select";
+      startInput.min = FORECAST_START.y + "-" + (FORECAST_START.m < 10 ? "0" : "") + FORECAST_START.m;
+      startInput.max = FORECAST_END.y + "-" + (FORECAST_END.m < 10 ? "0" : "") + FORECAST_END.m;
+      startInput.value = fc.customStart;
+      startInput.addEventListener("change", function(){ fc.customStart = startInput.value; scheduleSave(); renderMain(); });
+      startCtl.appendChild(startInput);
+      rangeControls.appendChild(startCtl);
+
+      var endCtl = document.createElement("div");
+      endCtl.className = "fin-ctl"; endCtl.innerHTML = "<label>To</label>";
+      var endInput = document.createElement("input");
+      endInput.type = "month"; endInput.className = "fin-select";
+      endInput.min = startInput.min; endInput.max = startInput.max;
+      endInput.value = fc.customEnd;
+      endInput.addEventListener("change", function(){ fc.customEnd = endInput.value; scheduleSave(); renderMain(); });
+      endCtl.appendChild(endInput);
+      rangeControls.appendChild(endCtl);
+    }else{
+      var fyCtl2 = document.createElement("div");
+      fyCtl2.className = "fin-ctl"; fyCtl2.innerHTML = "<label>Fiscal year</label>";
+      var fySel2 = document.createElement("select");
+      fySel2.className = "fin-select";
+      forecastFYOptions().forEach(function(opt){
+        var o = document.createElement("option"); o.value = opt; o.textContent = "FY " + opt;
+        if(opt === fc.selectedFY) o.selected = true;
+        fySel2.appendChild(o);
+      });
+      fySel2.addEventListener("change", function(){ fc.selectedFY = fySel2.value; scheduleSave(); renderMain(); });
+      fyCtl2.appendChild(fySel2);
+      rangeControls.appendChild(fyCtl2);
+    }
+    rangeHeader.appendChild(rangeControls);
+    view.appendChild(rangeHeader);
+
+    var range = currentForecastRange();
+    var months = generateForecastMonths(range, a);
+
+    /* summary */
+    var totals = months.reduce(function(s,mo){
+      s.income += mo.netCashIncome; s.pfnps += (mo.pf + mo.nps); s.expenses += mo.recurringExpenses;
+      s.bills += mo.scheduledBills; s.outflow += mo.totalOutflow; s.remaining += mo.cashRemaining;
+      if(mo.cashRemaining < 0) s.shortfallMonths++;
+      return s;
+    }, { income:0, pfnps:0, expenses:0, bills:0, outflow:0, remaining:0, shortfallMonths:0 });
+
+    var summary = document.createElement("div");
+    summary.className = "fin-summary";
+    [
+      ["Projected income", fmtINR(totals.income)],
+      ["PF + NPS total", fmtINR(totals.pfnps)],
+      ["Recurring expenses", fmtINR(totals.expenses)],
+      ["Scheduled bills", fmtINR(totals.bills)],
+      ["Total outflow", fmtINR(totals.outflow)],
+      ["Cash remaining", fmtINR(totals.remaining)],
+      ["Months with shortfall", totals.shortfallMonths + " of " + months.length]
+    ].forEach(function(c){
+      var card = document.createElement("div");
+      card.className = "fin-card";
+      card.innerHTML = '<div class="fc-label">' + c[0] + '</div><div class="fc-value">' + c[1] + '</div>';
+      summary.appendChild(card);
+    });
+    view.appendChild(summary);
+
+    /* annual bill provision note */
+    var provisionTotal = ANNUAL_BILL_KEYS.reduce(function(s,k){ return s + a.annualBills[k].amount; }, 0);
+    var note = document.createElement("p");
+    note.className = "empty";
+    note.style.marginBottom = "30px";
+    note.innerHTML = "Planning indicator only (not subtracted in the cash-flow math below): annual bills total " + fmtINR(provisionTotal) + "/yr \u2248 " + fmtINR(provisionTotal/12) + "/month if you wanted to set that much aside monthly instead.";
+    view.appendChild(note);
+
+    /* EMI milestones */
+    var milestoneSection = document.createElement("div");
+    milestoneSection.innerHTML = '<h2 class="sec-title">EMI completion milestones</h2>';
+    EMI_KEYS.forEach(function(k){
+      var emi = a.emis[k];
+      var row = document.createElement("div");
+      row.className = "attn-row";
+      var inRange = ymCompare(emi.endYear, emi.endMonth, range.start.y, range.start.m) >= 0 && ymCompare(emi.endYear, emi.endMonth, range.end.y, range.end.m) <= 0;
+      row.innerHTML =
+        '<span class="dot" style="background:' + (inRange ? FINANCE_ACCENT : "var(--faint)") + '"></span>' +
+        '<span class="a-name">' + emi.label + '</span>' +
+        '<span class="a-text">' + fmtINR(emi.amount) + "/mo \u2014 last payment " + ymLabel(emi.endYear, emi.endMonth) + (inRange ? " (in selected range)" : "") + '</span>';
+      milestoneSection.appendChild(row);
+    });
+    view.appendChild(milestoneSection);
+
+    /* upcoming large payments (annual bills) within range */
+    var upcomingSection = document.createElement("div");
+    upcomingSection.className = "fin-section";
+    upcomingSection.innerHTML = '<h2 class="sec-title">Upcoming large payments</h2>';
+    var upcomingList = document.createElement("div");
+    var upcoming = [];
+    months.forEach(function(mo){
+      ANNUAL_BILL_KEYS.forEach(function(k){
+        if(mo.billsDue.indexOf(k) !== -1) upcoming.push({ label:a.annualBills[k].label, amount:a.annualBills[k].amount, y:mo.year, m:mo.month });
+      });
+    });
+    if(!upcoming.length){
+      upcomingList.innerHTML = '<p class="empty">No scheduled annual bills fall inside the selected range.</p>';
+    }else{
+      upcoming.forEach(function(u){
+        var row = document.createElement("div");
+        row.className = "attn-row";
+        row.innerHTML =
+          '<span class="dot" style="background:' + FINANCE_ATTENTION_COLOR + '"></span>' +
+          '<span class="a-name">' + ymLabel(u.y, u.m) + '</span>' +
+          '<span class="a-text">' + u.label + " \u2014 " + fmtINR(u.amount) + '</span>';
+        upcomingList.appendChild(row);
+      });
+    }
+    upcomingSection.appendChild(upcomingList);
+    view.appendChild(upcomingSection);
+
+    /* assumptions panel (collapsible) */
+    var assumeSection = document.createElement("div");
+    assumeSection.className = "fin-section";
+    var assumeHead = document.createElement("div");
+    assumeHead.className = "subhead";
+    assumeHead.innerHTML = '<h2 class="sec-title">Forecast assumptions</h2>';
+    var toggleBtn = document.createElement("button");
+    toggleBtn.className = "add-chip";
+    toggleBtn.textContent = forecastAssumptionsOpen ? "Hide" : "Edit assumptions";
+    toggleBtn.addEventListener("click", function(){ forecastAssumptionsOpen = !forecastAssumptionsOpen; renderMain(); });
+    assumeHead.appendChild(toggleBtn);
+    assumeSection.appendChild(assumeHead);
+    if(forecastAssumptionsOpen){
+      assumeSection.appendChild(buildForecastAssumptionsForm(a));
+    }
+    view.appendChild(assumeSection);
+
+    /* monthly forecast table */
+    var tableSection = document.createElement("div");
+    tableSection.className = "fin-section";
+    tableSection.innerHTML = '<h2 class="sec-title">Month-by-month forecast</h2>';
+    var tableWrap = document.createElement("div");
+    tableWrap.className = "fin-table-wrap";
+    var table = document.createElement("table");
+    table.className = "fin-table";
+    table.innerHTML =
+      '<thead><tr><th>Month</th><th>Gross Salary</th><th>Gross Bonus</th><th>Reg. Tax</th><th>Bonus Tax</th>' +
+      '<th>PF</th><th>NPS</th><th>Net Cash Income</th><th>Recurring Exp.</th><th>Scheduled Bills</th>' +
+      '<th>Total Outflow</th><th>Cash Remaining</th></tr></thead>';
+    var tbody = document.createElement("tbody");
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    tableSection.appendChild(tableWrap);
+    view.appendChild(tableSection);
+
+    months.forEach(function(mo){
+      var row = document.createElement("tr");
+      row.className = "fin-row";
+      if(mo.cashRemaining < 0) row.style.background = "rgba(228,120,143,0.10)";
+      var monthKey = mo.year + "-" + mo.month;
+      row.innerHTML =
+        "<td>" + ymLabel(mo.year, mo.month) + (mo.activeEmis.length ? "" : "") + "</td>" +
+        "<td>" + fmtINRz(mo.grossSalary) + "</td>" +
+        "<td>" + fmtINRz(mo.grossBonus) + "</td>" +
+        "<td>" + fmtINRz(mo.regularTax) + "</td>" +
+        "<td>" + fmtINRz(mo.bonusTax) + "</td>" +
+        "<td>" + fmtINRz(mo.pf) + "</td>" +
+        "<td>" + fmtINRz(mo.nps) + "</td>" +
+        "<td>" + fmtINRz(mo.netCashIncome) + "</td>" +
+        "<td>" + fmtINRz(mo.recurringExpenses) + "</td>" +
+        "<td>" + fmtINRz(mo.scheduledBills) + "</td>" +
+        "<td>" + fmtINRz(mo.totalOutflow) + "</td>" +
+        '<td style="color:' + (mo.cashRemaining < 0 ? FINANCE_NEGATIVE_COLOR : "inherit") + '; font-weight:' + (mo.cashRemaining < 0 ? "700" : "400") + ';">' + fmtINRz(mo.cashRemaining) + "</td>";
+      tbody.appendChild(row);
+    });
+  }
+
+  function forecastNumField(label, obj, key, onChange){
+    var row = document.createElement("div");
+    row.className = "fg-row";
+    var lab = document.createElement("label"); lab.textContent = label;
+    var inp = document.createElement("input");
+    inp.type = "number"; inp.value = obj[key];
+    inp.addEventListener("input", function(){
+      obj[key] = parseFloat(inp.value) || 0;
+      scheduleSave();
+      if(onChange) onChange();
+      else renderMain();
+    });
+    row.appendChild(lab); row.appendChild(inp);
+    return row;
+  }
+
+  function buildForecastAssumptionsForm(a){
+    var wrap = document.createElement("div");
+
+    var groups = document.createElement("div");
+    groups.className = "fin-groups";
+
+    var incomeGroup = document.createElement("div");
+    incomeGroup.className = "fin-group";
+    incomeGroup.innerHTML = "<h4>Income</h4>";
+    incomeGroup.appendChild(forecastNumField("Gross salary / month", a, "grossSalary"));
+    incomeGroup.appendChild(forecastNumField("Income tax / month", a, "incomeTax"));
+    incomeGroup.appendChild(forecastNumField("PF / month", a, "pf"));
+    incomeGroup.appendChild(forecastNumField("NPS / month", a, "nps"));
+    incomeGroup.appendChild(forecastNumField("December bonus % of annual gross", a, "bonusPercent"));
+    incomeGroup.appendChild(forecastNumField("Estimated bonus tax %", a, "bonusTaxPercent"));
+    groups.appendChild(incomeGroup);
+
+    var rentGroup = document.createElement("div");
+    rentGroup.className = "fin-group";
+    rentGroup.innerHTML = "<h4>Rent</h4>";
+    rentGroup.appendChild(forecastNumField("Rent through Nov 2026", a, "rentBeforeDec2026"));
+    rentGroup.appendChild(forecastNumField("Rent from Dec 2026", a, "rentFromDec2026"));
+    rentGroup.appendChild(forecastNumField("Annual increase % (each Dec, from 2027)", a, "rentIncreasePercent"));
+    groups.appendChild(rentGroup);
+
+    var expGroup = document.createElement("div");
+    expGroup.className = "fin-group";
+    expGroup.innerHTML = "<h4>Recurring expenses</h4>";
+    [
+      ["milkPerDay","Milk / day"], ["groceries","Groceries / month"], ["vegFruits","Vegetables & fruits / month"],
+      ["amazonPayLater","Amazon Pay Later / month"], ["electricity","Electricity / month"], ["fuel","Fuel / month"],
+      ["lifeInsurance","Life insurance / month"], ["mobile","Mobile bill / month"], ["onlineShoppingFood","Online shopping & food / month"],
+      ["maid","Maid / month"], ["carWash","Car wash / month"], ["stationery","Stationery / month"],
+      ["subscriptions","Subscriptions / month"], ["misc","Miscellaneous / month"]
+    ].forEach(function(f){ expGroup.appendChild(forecastNumField(f[1], a, f[0])); });
+    groups.appendChild(expGroup);
+
+    var emiGroup = document.createElement("div");
+    emiGroup.className = "fin-group";
+    emiGroup.innerHTML = "<h4>EMI schedule</h4>";
+    EMI_KEYS.forEach(function(k){
+      var emi = a.emis[k];
+      var row = document.createElement("div");
+      row.className = "fg-row";
+      row.style.flexWrap = "wrap";
+      var lab = document.createElement("label"); lab.textContent = emi.label + " amount";
+      var amtInp = document.createElement("input");
+      amtInp.type = "number"; amtInp.value = emi.amount;
+      amtInp.addEventListener("input", function(){ emi.amount = parseFloat(amtInp.value) || 0; scheduleSave(); renderMain(); });
+      row.appendChild(lab); row.appendChild(amtInp);
+      emiGroup.appendChild(row);
+
+      var row2 = document.createElement("div");
+      row2.className = "fg-row";
+      var lab2 = document.createElement("label"); lab2.textContent = emi.label + " ends";
+      var monthInp = document.createElement("input");
+      monthInp.type = "month";
+      monthInp.value = emi.endYear + "-" + (emi.endMonth < 10 ? "0" : "") + emi.endMonth;
+      monthInp.style.width = "130px";
+      monthInp.addEventListener("change", function(){
+        var parts = monthInp.value.split("-");
+        emi.endYear = parseInt(parts[0], 10); emi.endMonth = parseInt(parts[1], 10);
+        scheduleSave(); renderMain();
+      });
+      row2.appendChild(lab2); row2.appendChild(monthInp);
+      emiGroup.appendChild(row2);
+    });
+    groups.appendChild(emiGroup);
+
+    var billGroup = document.createElement("div");
+    billGroup.className = "fin-group";
+    billGroup.innerHTML = "<h4>Annual scheduled bills</h4>";
+    ANNUAL_BILL_KEYS.forEach(function(k){
+      var bill = a.annualBills[k];
+      var row = document.createElement("div");
+      row.className = "fg-row";
+      var lab = document.createElement("label"); lab.textContent = bill.label + " amount";
+      var amtInp = document.createElement("input");
+      amtInp.type = "number"; amtInp.value = bill.amount;
+      amtInp.addEventListener("input", function(){ bill.amount = parseFloat(amtInp.value) || 0; scheduleSave(); renderMain(); });
+      row.appendChild(lab); row.appendChild(amtInp);
+      billGroup.appendChild(row);
+
+      var row2 = document.createElement("div");
+      row2.className = "fg-row";
+      var lab2 = document.createElement("label"); lab2.textContent = bill.label + " month";
+      var monthSel = document.createElement("select");
+      monthSel.style.width = "130px";
+      for(var mi = 1; mi <= 12; mi++){
+        var o = document.createElement("option"); o.value = mi; o.textContent = MONTH_NAMES[mi];
+        if(bill.month === mi) o.selected = true;
+        monthSel.appendChild(o);
+      }
+      monthSel.addEventListener("change", function(){ bill.month = parseInt(monthSel.value, 10); scheduleSave(); renderMain(); });
+      row2.appendChild(lab2); row2.appendChild(monthSel);
+      billGroup.appendChild(row2);
+    });
+    groups.appendChild(billGroup);
+
+    wrap.appendChild(groups);
+    return wrap;
   }
 
   function reRenderFinanceKeepOpen(mo){
@@ -861,7 +1386,7 @@
     copyBtn.addEventListener("click", function(){
       if(idx <= 0) return;
       var prevObj = monthsData[MONTHS[idx - 1]];
-      INCOME_FIELDS.concat(DEDUCTION_FIELDS).concat(EXPENSE_FIELDS).forEach(function(f){ monthObj[f[0]] = prevObj[f[0]] || 0; });
+      INCOME_FIELDS.concat(DEDUCTION_FIELDS).concat(INVESTMENT_FIELDS).concat(EXPENSE_FIELDS).forEach(function(f){ monthObj[f[0]] = prevObj[f[0]] || 0; });
       monthObj.notes = prevObj.notes || "";
       scheduleSave();
       reRenderFinanceKeepOpen(mo);
@@ -872,7 +1397,7 @@
     clearBtn.type = "button"; clearBtn.className = "fin-clear-btn"; clearBtn.textContent = "Clear Month";
     clearBtn.addEventListener("click", function(){
       if(!confirm("Clear all entries for " + mo + "? This can't be undone.")) return;
-      INCOME_FIELDS.concat(DEDUCTION_FIELDS).concat(EXPENSE_FIELDS).forEach(function(f){ monthObj[f[0]] = 0; });
+      INCOME_FIELDS.concat(DEDUCTION_FIELDS).concat(INVESTMENT_FIELDS).concat(EXPENSE_FIELDS).forEach(function(f){ monthObj[f[0]] = 0; });
       monthObj.notes = "";
       scheduleSave();
       reRenderFinanceKeepOpen(mo);
@@ -892,6 +1417,7 @@
     groups.className = "fin-groups";
     groups.appendChild(buildFieldGroup("Income", INCOME_FIELDS, monthObj, mo, fy));
     groups.appendChild(buildFieldGroup("Deductions", DEDUCTION_FIELDS, monthObj, mo, fy));
+    groups.appendChild(buildFieldGroup("Investments from Income", INVESTMENT_FIELDS, monthObj, mo, fy));
     groups.appendChild(buildFieldGroup("Expenses", EXPENSE_FIELDS, monthObj, mo, fy));
     wrap.appendChild(groups);
 
@@ -941,6 +1467,7 @@
     var t = monthTotals(state.finance.fy[fy].months[mo]);
     setText("fin-cell-" + mo + "-gross", fmtINRz(t.gross));
     setText("fin-cell-" + mo + "-ded", fmtINRz(t.ded));
+    setText("fin-cell-" + mo + "-inv", fmtINRz(t.inv));
     setText("fin-cell-" + mo + "-net", fmtINRz(t.net));
     setText("fin-cell-" + mo + "-exp", fmtINRz(t.exp));
     setText("fin-cell-" + mo + "-sav", fmtINRz(t.sav));
@@ -950,10 +1477,12 @@
     var agg = fyAggregate(fy);
     setText("fin-sum-gross", fmtINRz(agg.gross));
     setText("fin-sum-ded", fmtINRz(agg.ded));
+    setText("fin-sum-inv", fmtINRz(agg.inv));
     setText("fin-sum-net", fmtINRz(agg.net));
     setText("fin-sum-exp", fmtINRz(agg.exp));
     setText("fin-sum-sav", fmtINRz(agg.sav));
     setText("fin-sum-rate", fmtPctz(agg.rate));
+    setText("fin-sum-wrate", fmtPctz(agg.wrate));
     renderBreakdown(fy);
     renderInsights(fy);
   }
@@ -997,6 +1526,8 @@
     var lowestSavings = totals.reduce(function(a,b){ return b.t.sav < a.t.sav ? b : a; });
     var bestRate = totals.reduce(function(a,b){ return b.t.rate > a.t.rate ? b : a; });
     var avgSavings = totals.reduce(function(s,x){ return s + x.t.sav; }, 0) / 12;
+    var avgInvestments = totals.reduce(function(s,x){ return s + x.t.inv; }, 0) / 12;
+    var totalWealthAllocation = totals.reduce(function(s,x){ return s + x.t.wealth; }, 0);
     var target = state.finance.targetSavingsRate;
     var belowTargetCount = totals.filter(function(x){ return x.t.gross > 0 && x.t.rate < target; }).length;
 
@@ -1006,7 +1537,8 @@
 
     return {
       highestIncome:highestIncome, highestExpense:highestExpense, lowestSavings:lowestSavings, bestRate:bestRate,
-      avgSavings:avgSavings, belowTargetCount:belowTargetCount, topCategory:topCategory
+      avgSavings:avgSavings, avgInvestments:avgInvestments, totalWealthAllocation:totalWealthAllocation,
+      belowTargetCount:belowTargetCount, topCategory:topCategory
     };
   }
 
@@ -1022,10 +1554,12 @@
     var cards = [
       ["Highest income month", ins.highestIncome.mo + " \u2014 " + fmtINR(ins.highestIncome.t.gross)],
       ["Highest expense month", ins.highestExpense.mo + " \u2014 " + fmtINR(ins.highestExpense.t.exp)],
-      ["Lowest savings month", ins.lowestSavings.mo + " \u2014 " + fmtINR(ins.lowestSavings.t.sav)],
+      ["Lowest cash savings month", ins.lowestSavings.mo + " \u2014 " + fmtINR(ins.lowestSavings.t.sav)],
       ["Best savings rate month", ins.bestRate.mo + " \u2014 " + fmtPct(ins.bestRate.t.rate)],
       ["Top expense category", ins.topCategory ? (ins.topCategory.label + " \u2014 " + fmtINR(ins.topCategory.total) + " (" + fmtPct(ins.topCategory.pct) + ")") : "\u2014"],
-      ["Average monthly savings", fmtINR(ins.avgSavings)],
+      ["Average monthly cash savings", fmtINR(ins.avgSavings)],
+      ["Average monthly income investments", fmtINR(ins.avgInvestments)],
+      ["Total wealth allocation", fmtINR(ins.totalWealthAllocation)],
       ["Months below target savings rate", ins.belowTargetCount + (ins.belowTargetCount === 1 ? " month" : " months")]
     ];
     cards.forEach(function(c){
@@ -1252,6 +1786,13 @@
           base.finance.currentFY = parsed.finance.currentFY || base.finance.currentFY;
           base.finance.targetSavingsRate = (parsed.finance.targetSavingsRate !== undefined) ? parsed.finance.targetSavingsRate : base.finance.targetSavingsRate;
           base.finance.fy = parsed.finance.fy || {};
+        }
+        if(parsed.forecast){
+          if(parsed.forecast.assumptions) mergeForecastAssumptions(base.forecast.assumptions, parsed.forecast.assumptions);
+          if(parsed.forecast.rangeMode) base.forecast.rangeMode = parsed.forecast.rangeMode;
+          if(parsed.forecast.selectedFY) base.forecast.selectedFY = parsed.forecast.selectedFY;
+          if(parsed.forecast.customStart) base.forecast.customStart = parsed.forecast.customStart;
+          if(parsed.forecast.customEnd) base.forecast.customEnd = parsed.forecast.customEnd;
         }
         state = base;
         scheduleSave(); renderMain();
