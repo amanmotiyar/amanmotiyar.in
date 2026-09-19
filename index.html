@@ -655,6 +655,52 @@
     return { rows:rows, outOfRange:outOfRange };
   }
 
+  /* ---------------- monthly financial review ---------------- */
+
+  function collectAllRecordedMonths(){
+    var list = [];
+    Object.keys(state.finance.fy).forEach(function(fy){
+      var months = state.finance.fy[fy].months;
+      MONTHS.forEach(function(mo){
+        var m = months[mo];
+        if(m && m.recorded){
+          var cal = actualMonthToCalendar(fy, mo);
+          list.push({ fy:fy, mo:mo, year:cal.year, month:cal.month });
+        }
+      });
+    });
+    list.sort(function(a,b){ return ymCompare(a.year,a.month,b.year,b.month); });
+    return list;
+  }
+
+  function monthlyReviewKey(fy, mo){ return fy + "|" + mo; }
+
+  function getMonthlyReview(fy, mo){
+    var k = monthlyReviewKey(fy, mo);
+    return state.finance.monthlyReviews[k] || { whatWentDifferently:"", why:"", nextAction:"", updatedAt:null };
+  }
+
+  function ensureMonthlyReview(fy, mo){
+    var k = monthlyReviewKey(fy, mo);
+    if(!state.finance.monthlyReviews[k]){
+      state.finance.monthlyReviews[k] = { whatWentDifferently:"", why:"", nextAction:"", updatedAt:null };
+    }
+    return state.finance.monthlyReviews[k];
+  }
+
+  function hasReviewContent(r){
+    return !!(r && ((r.whatWentDifferently && r.whatWentDifferently.trim()) || (r.why && r.why.trim()) || (r.nextAction && r.nextAction.trim())));
+  }
+
+  function goToMonthlyReview(fy, mo){
+    financeMode = "review";
+    financeReviewSelectedKey = monthlyReviewKey(fy, mo);
+    activeTab = "finance";
+    updateTabStyles();
+    renderMain();
+  }
+
+
   function findLatestActualClosingBalance(){
     var best = null;
     Object.keys(state.finance.fy).forEach(function(fy){
@@ -706,7 +752,7 @@
       domains: domains,
       reviews: [],
       profile: { photo:"", fullName:"", phone:"", email:"", city:"", linkedin:"", emergencyContact:"", bloodGroup:"", dob:"" },
-      finance: { currentFY: computeCurrentFY(), targetSavingsRate: 20, fy: {} },
+      finance: { currentFY: computeCurrentFY(), targetSavingsRate: 20, fy: {}, monthlyReviews: {} },
       forecast: { assumptions: defaultForecastAssumptions(), rangeMode: "fy", selectedFY: "2026-27", customStart: "2026-09", customEnd: "2027-03",
         reserve: { openingBalance: 0, openingDate: "2026-09", minReserveTarget: 0 } }
     };
@@ -724,6 +770,7 @@
         base.finance.currentFY = parsed.finance.currentFY || base.finance.currentFY;
         base.finance.targetSavingsRate = (parsed.finance.targetSavingsRate !== undefined) ? parsed.finance.targetSavingsRate : base.finance.targetSavingsRate;
         base.finance.fy = parsed.finance.fy || {};
+        base.finance.monthlyReviews = parsed.finance.monthlyReviews || {};
         migrateRecordedFlags(base.finance.fy);
       }
       if(parsed.forecast){
@@ -1005,6 +1052,7 @@
   /* ---------------- finance ---------------- */
 
   var financeMode = "actual";
+  var financeReviewSelectedKey = null;
 
   function buildFinance(view){
     view.innerHTML =
@@ -1013,7 +1061,7 @@
 
     var modeToggle = document.createElement("div");
     modeToggle.className = "fin-mode-toggle";
-    [["actual","Actual"], ["forecast","Budget & Cash-Flow Forecast"], ["compare","Actual vs Forecast"]].forEach(function(pair){
+    [["actual","Actual"], ["forecast","Budget & Cash-Flow Forecast"], ["compare","Actual vs Forecast"], ["review","Monthly Review"]].forEach(function(pair){
       var btn = document.createElement("button");
       btn.type = "button"; btn.textContent = pair[1];
       if(financeMode === pair[0]) btn.classList.add("on");
@@ -1028,6 +1076,7 @@
 
     if(financeMode === "forecast") buildFinanceForecast(view);
     else if(financeMode === "compare") buildFinanceCompare(view);
+    else if(financeMode === "review") buildFinanceReview(view);
     else buildFinanceActual(view);
   }
 
@@ -1831,6 +1880,188 @@
     return wrap;
   }
 
+  /* ---------------- monthly financial review: rendering ---------------- */
+
+  function buildFinanceReview(view){
+    var intro = document.createElement("p");
+    intro.className = "hero-loop";
+    intro.style.marginBottom = "24px";
+    intro.textContent = "A monthly checkpoint for each recorded Actual month \u2014 the numbers are calculated for you; the reflections below are yours to write.";
+    view.appendChild(intro);
+
+    var recordedMonths = collectAllRecordedMonths();
+    if(!recordedMonths.length){
+      var empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No recorded Actual months yet. Once you mark a month as recorded in the Actual tab, it'll appear here for review.";
+      view.appendChild(empty);
+      return;
+    }
+
+    if(!financeReviewSelectedKey || !recordedMonths.some(function(r){ return monthlyReviewKey(r.fy, r.mo) === financeReviewSelectedKey; })){
+      var last = recordedMonths[recordedMonths.length - 1];
+      financeReviewSelectedKey = monthlyReviewKey(last.fy, last.mo);
+    }
+
+    var selHeader = document.createElement("div");
+    selHeader.className = "fin-header";
+    var selControls = document.createElement("div");
+    selControls.className = "fin-controls";
+    var selCtl = document.createElement("div");
+    selCtl.className = "fin-ctl";
+    selCtl.innerHTML = "<label>Reviewing</label>";
+    var sel = document.createElement("select");
+    sel.className = "fin-select";
+    recordedMonths.forEach(function(r){
+      var o = document.createElement("option");
+      o.value = monthlyReviewKey(r.fy, r.mo);
+      o.textContent = ymLabel(r.year, r.month) + " (FY " + r.fy + ")";
+      if(o.value === financeReviewSelectedKey) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.addEventListener("change", function(){ financeReviewSelectedKey = sel.value; renderMain(); });
+    selCtl.appendChild(sel);
+    selControls.appendChild(selCtl);
+    selHeader.appendChild(selControls);
+    view.appendChild(selHeader);
+
+    var resultsContainer = document.createElement("div");
+    resultsContainer.id = "reviewResults";
+    view.appendChild(resultsContainer);
+    renderMonthlyReviewInto(resultsContainer);
+  }
+
+  function renderMonthlyReviewInto(container){
+    container.innerHTML = "";
+    var parts = financeReviewSelectedKey.split("|");
+    var fy = parts[0], mo = parts[1];
+    var monthObj = state.finance.fy[fy].months[mo];
+    var cal = actualMonthToCalendar(fy, mo);
+    var a = state.forecast.assumptions;
+    var actualT = monthTotals(monthObj);
+    var forecastT = computeForecastMonth(cal.year, cal.month, a);
+    var reserve = state.forecast.reserve;
+
+    var dIncome = actualT.net - forecastT.netCashIncome;
+    var dExp = actualT.exp - forecastT.totalOutflow;
+    var dSurplus = actualT.sav - forecastT.cashRemaining;
+
+    var summary = document.createElement("div");
+    summary.className = "fin-summary";
+    function diffLabel(d){ return (d > 0 ? "+" : "") + fmtINRz(d); }
+    [
+      ["Net income \u2014 Forecast", fmtINRz(forecastT.netCashIncome)],
+      ["Net income \u2014 Actual", fmtINRz(actualT.net)],
+      ["Net income \u2014 Difference", diffLabel(dIncome)],
+      ["Expenses \u2014 Forecast", fmtINRz(forecastT.totalOutflow)],
+      ["Expenses \u2014 Actual", fmtINRz(actualT.exp)],
+      ["Expenses \u2014 Difference", diffLabel(dExp)],
+      ["Cash surplus \u2014 Forecast", fmtINRz(forecastT.cashRemaining)],
+      ["Cash surplus \u2014 Actual", fmtINRz(actualT.sav)],
+      ["Cash surplus \u2014 Difference", diffLabel(dSurplus)]
+    ].forEach(function(c){
+      var card = document.createElement("div");
+      card.className = "fin-card";
+      card.innerHTML = '<div class="fc-label">' + c[0] + '</div><div class="fc-value">' + c[1] + '</div>';
+      summary.appendChild(card);
+    });
+    container.appendChild(summary);
+
+    var balSection = document.createElement("div");
+    balSection.className = "fin-section";
+    balSection.innerHTML = '<h2 class="sec-title">Actual closing cash balance</h2>';
+    if(monthObj.actualClosingBalance === null || monthObj.actualClosingBalance === undefined){
+      var noBal = document.createElement("p");
+      noBal.className = "empty";
+      noBal.textContent = "Not entered yet \u2014 add it in the Actual vs Forecast tab for this month to see it here.";
+      balSection.appendChild(noBal);
+    }else{
+      var vsTarget = monthObj.actualClosingBalance - reserve.minReserveTarget;
+      var balRow = document.createElement("div");
+      balRow.className = "attn-row";
+      balRow.innerHTML =
+        '<span class="dot" style="background:' + (vsTarget < 0 ? FINANCE_NEGATIVE_COLOR : FINANCE_ACCENT) + '"></span>' +
+        '<span class="a-name">' + fmtINR(monthObj.actualClosingBalance) + '</span>' +
+        '<span class="a-text">' + (vsTarget >= 0 ? (fmtINR(vsTarget) + " above") : (fmtINR(Math.abs(vsTarget)) + " below")) + ' your minimum reserve target of ' + fmtINR(reserve.minReserveTarget) + '</span>';
+      balSection.appendChild(balRow);
+    }
+    container.appendChild(balSection);
+
+    var nextY = cal.month === 12 ? cal.year + 1 : cal.year;
+    var nextM = cal.month === 12 ? 1 : cal.month + 1;
+    var nextForecast = computeForecastMonth(nextY, nextM, a);
+    var lookaheadSection = document.createElement("div");
+    lookaheadSection.className = "fin-section";
+    lookaheadSection.innerHTML = '<h2 class="sec-title">Upcoming in ' + ymLabel(nextY, nextM) + '</h2>';
+    var upcomingItems = [];
+    nextForecast.activeEmis.forEach(function(k){ upcomingItems.push({ label:a.emis[k].label, amount:a.emis[k].amount }); });
+    nextForecast.billsDue.forEach(function(k){ upcomingItems.push({ label:a.annualBills[k].label, amount:a.annualBills[k].amount }); });
+    if(!upcomingItems.length){
+      var noUp = document.createElement("p");
+      noUp.className = "empty";
+      noUp.textContent = "No EMIs or scheduled annual bills due next month.";
+      lookaheadSection.appendChild(noUp);
+    }else{
+      upcomingItems.forEach(function(u){
+        var row = document.createElement("div");
+        row.className = "attn-row";
+        row.innerHTML =
+          '<span class="dot" style="background:' + FINANCE_ATTENTION_COLOR + '"></span>' +
+          '<span class="a-name">' + u.label + '</span>' +
+          '<span class="a-text">' + fmtINR(u.amount) + '</span>';
+        lookaheadSection.appendChild(row);
+      });
+    }
+    container.appendChild(lookaheadSection);
+
+    var review = getMonthlyReview(fy, mo);
+    var reflectSection = document.createElement("div");
+    reflectSection.className = "fin-section";
+    reflectSection.innerHTML = '<h2 class="sec-title">Your reflection</h2>';
+    if(review.updatedAt){
+      var updated = document.createElement("p");
+      updated.className = "empty";
+      updated.style.marginBottom = "14px";
+      updated.textContent = "Last saved " + new Date(review.updatedAt).toLocaleString();
+      reflectSection.appendChild(updated);
+    }
+
+    function reflectField(label, key, placeholder){
+      var wrap = document.createElement("div");
+      wrap.className = "fin-notes";
+      wrap.style.marginBottom = "16px";
+      var lab = document.createElement("label");
+      lab.textContent = label;
+      var ta = document.createElement("textarea");
+      ta.value = review[key] || "";
+      ta.placeholder = placeholder;
+      ta.addEventListener("input", function(){
+        var liveReview = ensureMonthlyReview(fy, mo);
+        liveReview[key] = ta.value;
+        liveReview.updatedAt = Date.now();
+        scheduleSave();
+      });
+      wrap.appendChild(lab); wrap.appendChild(ta);
+      return wrap;
+    }
+    reflectSection.appendChild(reflectField("What went differently than planned?", "whatWentDifferently", "\u2014"));
+    reflectSection.appendChild(reflectField("Why did it happen?", "why", "\u2014"));
+    reflectSection.appendChild(reflectField("What is my one financial action for next month?", "nextAction", "\u2014"));
+
+    var delBtn = document.createElement("button");
+    delBtn.className = "util-btn";
+    delBtn.textContent = "Delete this review";
+    delBtn.addEventListener("click", function(){
+      if(!confirm("Delete your reflection for " + ymLabel(cal.year, cal.month) + "? This only removes the written review \u2014 your Actual Finance entries for this month are not affected.")) return;
+      delete state.finance.monthlyReviews[monthlyReviewKey(fy, mo)];
+      scheduleSave();
+      renderMain();
+    });
+    reflectSection.appendChild(delBtn);
+
+    container.appendChild(reflectSection);
+  }
+
   function reRenderFinanceKeepOpen(mo){
     renderMain();
     var btn = document.getElementById("fin-editbtn-" + mo);
@@ -2220,6 +2451,31 @@
     composer.appendChild(select); composer.appendChild(ta); composer.appendChild(logBtn);
     view.appendChild(composer);
 
+    var finReviewKeys = Object.keys(state.finance.monthlyReviews).filter(function(k){ return hasReviewContent(state.finance.monthlyReviews[k]); });
+    if(finReviewKeys.length){
+      var finReviewSection = document.createElement("div");
+      finReviewSection.style.marginBottom = "30px";
+      finReviewSection.innerHTML = '<h2 class="sec-title">Monthly Financial Reviews</h2>';
+      var sortedKeys = finReviewKeys.map(function(k){
+        var parts = k.split("|"); var cal = actualMonthToCalendar(parts[0], parts[1]);
+        return { key:k, fy:parts[0], mo:parts[1], year:cal.year, month:cal.month };
+      }).sort(function(a,b){ return ymCompare(b.year,b.month,a.year,a.month); });
+      sortedKeys.forEach(function(entry){
+        var r = state.finance.monthlyReviews[entry.key];
+        var preview = (r.whatWentDifferently || r.why || r.nextAction || "").trim();
+        var row = document.createElement("div");
+        row.className = "attn-row";
+        row.style.cursor = "pointer";
+        row.innerHTML =
+          '<span class="dot" style="background:' + FINANCE_ACCENT + '"></span>' +
+          '<span class="a-name">' + ymLabel(entry.year, entry.month) + '</span>' +
+          '<span class="a-text">' + escapeHtml(preview.length > 90 ? (preview.slice(0,90) + "\u2026") : preview) + ' &rarr;</span>';
+        row.addEventListener("click", function(){ goToMonthlyReview(entry.fy, entry.mo); });
+        finReviewSection.appendChild(row);
+      });
+      view.appendChild(finReviewSection);
+    }
+
     if(!state.reviews.length){
       var empty = document.createElement("p");
       empty.className = "empty"; empty.textContent = "No entries yet. Log your first review above.";
@@ -2281,6 +2537,7 @@
           base.finance.currentFY = parsed.finance.currentFY || base.finance.currentFY;
           base.finance.targetSavingsRate = (parsed.finance.targetSavingsRate !== undefined) ? parsed.finance.targetSavingsRate : base.finance.targetSavingsRate;
           base.finance.fy = parsed.finance.fy || {};
+          base.finance.monthlyReviews = parsed.finance.monthlyReviews || {};
           migrateRecordedFlags(base.finance.fy);
         }
         if(parsed.forecast){
