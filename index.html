@@ -289,8 +289,6 @@
   var STORAGE_KEY = "aman-mlg-life-tracker-v2";
 
   var DOMAIN_DEFS = [
-    { key:"investments", name:"Investments", subtitle:"Portfolio & net worth", accent:"#E3B14A", gem:"Citrine",
-      subs:[ {name:"Investment Tracker", url:""}, {name:"Net Worth", url:""}, {name:"Portfolio Review", url:""} ] },
     { key:"professional", name:"Professional", subtitle:"Career & craft", accent:"#5B8DEF", gem:"Sapphire",
       subs:[ {name:"Professional Profile", url:""}, {name:"Skills & Competencies", url:""}, {name:"Career Strategy", url:""} ] },
     { key:"dreams", name:"Dreams & Goals", subtitle:"Vision & aspirations", accent:"#B98CE8", gem:"Amethyst",
@@ -305,6 +303,9 @@
   var FINANCE_GEM = "Emerald";
   var FINANCE_ATTENTION_COLOR = "#E8C766";
   var FINANCE_NEGATIVE_COLOR = "#E85D75";
+  var INVESTMENTS_ACCENT = "#E3B14A";
+  var INVESTMENTS_GEM = "Citrine";
+  var INVESTMENT_CATEGORIES = ["PF", "NPS", "Mutual Funds", "Stocks", "Fixed Deposits", "Other"];
 
   var NAV_ITEMS = [
     {key:"overview", label:"Overview"},
@@ -447,6 +448,31 @@
   }
   function financeColor(level){
     return level === "steady" ? FINANCE_ACCENT : level === "attention" ? FINANCE_ATTENTION_COLOR : FINANCE_NEGATIVE_COLOR;
+  }
+
+  /* ---------------- investments & net worth ---------------- */
+
+  function investmentTotals(){
+    var holdings = state.investments.holdings;
+    var invested = holdings.reduce(function(s,h){ return s + (parseFloat(h.invested) || 0); }, 0);
+    var current = holdings.reduce(function(s,h){ return s + (parseFloat(h.currentValue) || 0); }, 0);
+    var gainLoss = current - invested;
+    var gainLossPct = invested !== 0 ? (gainLoss / invested * 100) : 0;
+    return { invested:invested, current:current, gainLoss:gainLoss, gainLossPct:gainLossPct };
+  }
+
+  function netWorthTotals(){
+    var inv = investmentTotals();
+    var nw = state.investments.netWorth;
+    var bankCash = parseFloat(nw.bankCash) || 0;
+    var propertyTotal = nw.property.reduce(function(s,p){ return s + (parseFloat(p.value) || 0); }, 0);
+    var otherTotal = nw.otherAssets.reduce(function(s,o){ return s + (parseFloat(o.value) || 0); }, 0);
+    var liabTotal = nw.liabilities.reduce(function(s,l){ return s + (parseFloat(l.outstandingBalance) || 0); }, 0);
+    var totalAssets = inv.current + bankCash + propertyTotal + otherTotal;
+    return {
+      totalAssets:totalAssets, totalLiabilities:liabTotal, netWorth:totalAssets - liabTotal,
+      investmentsCurrent:inv.current, bankCash:bankCash, propertyTotal:propertyTotal, otherTotal:otherTotal, liabTotal:liabTotal
+    };
   }
 
   /* ---------------- forecast: constants & assumptions ---------------- */
@@ -754,7 +780,12 @@
       profile: { photo:"", fullName:"", phone:"", email:"", city:"", linkedin:"", emergencyContact:"", bloodGroup:"", dob:"" },
       finance: { currentFY: computeCurrentFY(), targetSavingsRate: 20, fy: {}, monthlyReviews: {} },
       forecast: { assumptions: defaultForecastAssumptions(), rangeMode: "fy", selectedFY: "2026-27", customStart: "2026-09", customEnd: "2027-03",
-        reserve: { openingBalance: 0, openingDate: "2026-09", minReserveTarget: 0 } }
+        reserve: { openingBalance: 0, openingDate: "2026-09", minReserveTarget: 0 } },
+      investments: {
+        holdings: [],
+        netWorth: { bankCash: 0, property: [], otherAssets: [], liabilities: [] },
+        snapshots: []
+      }
     };
   }
   function loadState(){
@@ -785,8 +816,19 @@
           if(parsed.forecast.reserve.minReserveTarget !== undefined) base.forecast.reserve.minReserveTarget = parsed.forecast.reserve.minReserveTarget;
         }
       }
+      if(parsed.investments) mergeInvestments(base.investments, parsed.investments);
       return base;
     }catch(e){ console.error("load failed", e); return defaultState(); }
+  }
+  function mergeInvestments(base, incoming){
+    base.holdings = Array.isArray(incoming.holdings) ? incoming.holdings : [];
+    if(incoming.netWorth){
+      base.netWorth.bankCash = (incoming.netWorth.bankCash !== undefined) ? incoming.netWorth.bankCash : 0;
+      base.netWorth.property = Array.isArray(incoming.netWorth.property) ? incoming.netWorth.property : [];
+      base.netWorth.otherAssets = Array.isArray(incoming.netWorth.otherAssets) ? incoming.netWorth.otherAssets : [];
+      base.netWorth.liabilities = Array.isArray(incoming.netWorth.liabilities) ? incoming.netWorth.liabilities : [];
+    }
+    base.snapshots = Array.isArray(incoming.snapshots) ? incoming.snapshots : [];
   }
 
   var state = loadState();
@@ -844,6 +886,7 @@
 
   function accentForTab(key){
     if(key === "finance") return FINANCE_ACCENT;
+    if(key === "investments") return INVESTMENTS_ACCENT;
     var def = domainDef(key);
     return def ? def.accent : GOLD;
   }
@@ -878,6 +921,7 @@
     else if(activeTab === "review") buildReview(view);
     else if(activeTab === "profile") buildProfile(view);
     else if(activeTab === "finance") buildFinance(view);
+    else if(activeTab === "investments") buildInvestments(view);
     else buildDomain(view, activeTab);
   }
 
@@ -922,6 +966,22 @@
       '<p class="preview">' + (fs.level ? ("Savings " + fmtINR(fs.agg.sav) + " &middot; " + fmtPct(fs.agg.rate) + " rate") : "No data yet") + '</p>';
     finTile.addEventListener("click", function(){ setActiveTab("finance"); });
     tiles.appendChild(finTile);
+
+    var nw = netWorthTotals();
+    var invTile = document.createElement("div");
+    invTile.className = "tile";
+    var hasInvData = state.investments.holdings.length > 0 || nw.totalAssets !== 0 || nw.totalLiabilities !== 0;
+    var invChip = hasInvData
+      ? ('<span class="status-chip" style="color:' + (nw.netWorth >= 0 ? INVESTMENTS_ACCENT : FINANCE_NEGATIVE_COLOR) + '">' + (nw.netWorth >= 0 ? "positive" : "negative") + '</span>')
+      : '<span class="status-chip">not set</span>';
+    invTile.innerHTML =
+      '<div style="position:absolute;top:0;left:0;right:0;height:3px;background:' + INVESTMENTS_ACCENT + ';"></div>' +
+      invChip +
+      '<h3>Investments</h3>' +
+      '<p class="tsub">Portfolio &amp; net worth &middot; ' + INVESTMENTS_GEM + '</p>' +
+      '<p class="preview">' + (hasInvData ? ("Net worth " + fmtINR(nw.netWorth)) : "No data yet") + '</p>';
+    invTile.addEventListener("click", function(){ setActiveTab("investments"); });
+    tiles.appendChild(invTile);
 
     DOMAIN_DEFS.forEach(function(def){
       var d = state.domains[def.key];
@@ -2311,6 +2371,365 @@
   }
   function setText(id, text){ var el = document.getElementById(id); if(el) el.textContent = text; }
 
+  /* ---------------- investments & net worth: rendering ---------------- */
+
+  var investmentsMode = "holdings";
+
+  function todayISO(){ return new Date().toISOString().slice(0,10); }
+
+  function buildInvestments(view){
+    view.innerHTML =
+      '<div class="focus-eyebrow">INVESTMENTS &middot; CITRINE</div>' +
+      '<div class="focus-title" style="font-size:36px; margin-bottom:10px;">Portfolio &amp; net worth</div>';
+
+    var modeToggle = document.createElement("div");
+    modeToggle.className = "fin-mode-toggle";
+    [["holdings","Holdings"], ["networth","Net Worth"]].forEach(function(pair){
+      var btn = document.createElement("button");
+      btn.type = "button"; btn.textContent = pair[1];
+      if(investmentsMode === pair[0]) btn.classList.add("on");
+      btn.addEventListener("click", function(){
+        if(investmentsMode === pair[0]) return;
+        investmentsMode = pair[0];
+        renderMain();
+      });
+      modeToggle.appendChild(btn);
+    });
+    view.appendChild(modeToggle);
+
+    if(investmentsMode === "networth") buildNetWorthView(view);
+    else buildHoldingsView(view);
+  }
+
+  function buildHoldingsView(view){
+    var intro = document.createElement("p");
+    intro.className = "hero-loop";
+    intro.style.marginBottom = "24px";
+    intro.textContent = "Track what you've invested and what it's worth now, by category. Don't add your bank balance here \u2014 that's entered once, under Net Worth.";
+    view.appendChild(intro);
+
+    var summary = document.createElement("div");
+    summary.id = "invSummary";
+    view.appendChild(summary);
+    renderInvestmentSummaryInto(summary);
+
+    var tableWrap = document.createElement("div");
+    tableWrap.className = "fin-table-wrap";
+    var table = document.createElement("table");
+    table.className = "fin-table";
+    table.innerHTML =
+      '<thead><tr><th>Category</th><th>Name</th><th>Invested</th><th>Current Value</th><th>As Of</th><th>Gain / Loss</th><th></th></tr></thead>';
+    var tbody = document.createElement("tbody");
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    view.appendChild(tableWrap);
+
+    if(!state.investments.holdings.length){
+      var empty = document.createElement("p");
+      empty.className = "empty";
+      empty.style.marginTop = "14px";
+      empty.textContent = "No holdings yet \u2014 add your first one below.";
+      view.appendChild(empty);
+    }
+
+    state.investments.holdings.forEach(function(h){
+      tbody.appendChild(buildHoldingRow(h));
+    });
+
+    var addBtn = document.createElement("button");
+    addBtn.className = "add-chip";
+    addBtn.style.marginTop = "14px";
+    addBtn.textContent = "+ add holding";
+    addBtn.addEventListener("click", function(){
+      state.investments.holdings.push({ id:uid(), category:"Mutual Funds", name:"", invested:0, currentValue:0, asOfDate:todayISO() });
+      scheduleSave();
+      renderMain();
+    });
+    view.appendChild(addBtn);
+  }
+
+  function buildHoldingRow(h){
+    var row = document.createElement("tr");
+    row.className = "fin-row";
+    row.id = "inv-row-" + h.id;
+
+    var catCell = document.createElement("td");
+    var catSel = document.createElement("select");
+    catSel.className = "fin-select";
+    INVESTMENT_CATEGORIES.forEach(function(c){
+      var o = document.createElement("option"); o.value = c; o.textContent = c;
+      if(h.category === c) o.selected = true;
+      catSel.appendChild(o);
+    });
+    catSel.addEventListener("change", function(){ h.category = catSel.value; scheduleSave(); });
+    catCell.appendChild(catSel);
+    row.appendChild(catCell);
+
+    var nameCell = document.createElement("td");
+    var nameInp = document.createElement("input");
+    nameInp.type = "text"; nameInp.placeholder = "Holding name"; nameInp.value = h.name || "";
+    nameInp.style.background = "transparent"; nameInp.style.border = "none"; nameInp.style.borderBottom = "1px solid var(--line)";
+    nameInp.style.color = "var(--ink)"; nameInp.style.padding = "3px 2px"; nameInp.style.width = "140px";
+    nameInp.addEventListener("input", function(){ h.name = nameInp.value; scheduleSave(); });
+    nameCell.appendChild(nameInp);
+    row.appendChild(nameCell);
+
+    function amountCell(key){
+      var td = document.createElement("td");
+      var inp = document.createElement("input");
+      inp.type = "number"; inp.value = h[key];
+      inp.style.background = "transparent"; inp.style.border = "none"; inp.style.borderBottom = "1px solid var(--line)";
+      inp.style.color = "var(--ink)"; inp.style.fontFamily = "'JetBrains Mono', monospace"; inp.style.fontSize = "12.5px";
+      inp.style.padding = "3px 2px"; inp.style.width = "110px";
+      inp.addEventListener("input", function(){
+        h[key] = parseFloat(inp.value) || 0;
+        scheduleSave();
+        updateHoldingRow(h.id);
+        refreshInvestmentSummary();
+      });
+      td.appendChild(inp);
+      return td;
+    }
+    row.appendChild(amountCell("invested"));
+    row.appendChild(amountCell("currentValue"));
+
+    var dateCell = document.createElement("td");
+    var dateInp = document.createElement("input");
+    dateInp.type = "date"; dateInp.value = h.asOfDate || todayISO();
+    dateInp.style.background = "transparent"; dateInp.style.border = "none"; dateInp.style.borderBottom = "1px solid var(--line)";
+    dateInp.style.color = "var(--ink)"; dateInp.style.fontFamily = "'JetBrains Mono', monospace"; dateInp.style.fontSize = "11.5px";
+    dateInp.addEventListener("change", function(){ h.asOfDate = dateInp.value; scheduleSave(); });
+    dateCell.appendChild(dateInp);
+    row.appendChild(dateCell);
+
+    var glCell = document.createElement("td");
+    glCell.id = "inv-gl-" + h.id;
+    row.appendChild(glCell);
+
+    var rmCell = document.createElement("td");
+    var rmBtn = document.createElement("button");
+    rmBtn.className = "s-remove"; rmBtn.type = "button"; rmBtn.textContent = "\u00d7";
+    rmBtn.addEventListener("click", function(){
+      state.investments.holdings = state.investments.holdings.filter(function(x){ return x.id !== h.id; });
+      scheduleSave();
+      renderMain();
+    });
+    rmCell.appendChild(rmBtn);
+    row.appendChild(rmCell);
+
+    setTimeout(function(){ updateHoldingRow(h.id); }, 0);
+    return row;
+  }
+
+  function updateHoldingRow(id){
+    var h = state.investments.holdings.find(function(x){ return x.id === id; });
+    if(!h) return;
+    var gl = (parseFloat(h.currentValue) || 0) - (parseFloat(h.invested) || 0);
+    var el = document.getElementById("inv-gl-" + id);
+    if(el){
+      el.textContent = (gl >= 0 ? "+" : "") + fmtINRz(gl);
+      el.style.color = gl < 0 ? FINANCE_NEGATIVE_COLOR : INVESTMENTS_ACCENT;
+      el.style.fontWeight = "600";
+    }
+  }
+
+  function refreshInvestmentSummary(){
+    var c = document.getElementById("invSummary");
+    if(c) renderInvestmentSummaryInto(c);
+  }
+
+  function renderInvestmentSummaryInto(container){
+    container.innerHTML = "";
+    var t = investmentTotals();
+    var summary = document.createElement("div");
+    summary.className = "fin-summary";
+    [
+      ["Total Invested", fmtINRz(t.invested)],
+      ["Total Current Value", fmtINRz(t.current)],
+      ["Total Gain / Loss", (t.gainLoss >= 0 ? "+" : "") + fmtINRz(t.gainLoss)],
+      ["Gain / Loss %", (t.gainLossPct >= 0 ? "+" : "") + fmtPctz(t.gainLossPct)]
+    ].forEach(function(c){
+      var card = document.createElement("div");
+      card.className = "fin-card";
+      card.innerHTML = '<div class="fc-label">' + c[0] + '</div><div class="fc-value">' + c[1] + '</div>';
+      summary.appendChild(card);
+    });
+    container.appendChild(summary);
+  }
+
+  function buildNetWorthView(view){
+    var intro = document.createElement("p");
+    intro.className = "hero-loop";
+    intro.style.marginBottom = "24px";
+    intro.textContent = "Assets minus liabilities. Your investment holdings' current value is included automatically \u2014 no need to re-enter it here. Liabilities are the amount you actually still owe, not the sum of remaining EMI payments.";
+    view.appendChild(intro);
+
+    var summary = document.createElement("div");
+    summary.id = "nwSummary";
+    view.appendChild(summary);
+    renderNetWorthSummaryInto(summary);
+
+    var nw = state.investments.netWorth;
+
+    var cashSection = document.createElement("div");
+    cashSection.className = "fin-section";
+    cashSection.innerHTML = '<h2 class="sec-title">Bank cash</h2>';
+    var cashRow = document.createElement("div");
+    cashRow.className = "fin-ctl";
+    cashRow.innerHTML = "<label>Available bank cash (not already counted as a holding)</label>";
+    var cashInp = document.createElement("input");
+    cashInp.type = "number"; cashInp.className = "fin-target-input"; cashInp.style.width = "160px";
+    cashInp.value = nw.bankCash;
+    cashInp.addEventListener("input", function(){ nw.bankCash = parseFloat(cashInp.value) || 0; scheduleSave(); refreshNetWorthSummary(); });
+    cashRow.appendChild(cashInp);
+    cashSection.appendChild(cashRow);
+    view.appendChild(cashSection);
+
+    view.appendChild(buildAmountListSection("Property & land", nw.property, "value", "+ add property", function(){
+      nw.property.push({ id:uid(), name:"", value:0 }); scheduleSave(); renderMain();
+    }));
+    view.appendChild(buildAmountListSection("Other assets", nw.otherAssets, "value", "+ add asset", function(){
+      nw.otherAssets.push({ id:uid(), name:"", value:0 }); scheduleSave(); renderMain();
+    }));
+    view.appendChild(buildAmountListSection("Liabilities (outstanding balance owed)", nw.liabilities, "outstandingBalance", "+ add liability", function(){
+      nw.liabilities.push({ id:uid(), name:"", outstandingBalance:0 }); scheduleSave(); renderMain();
+    }));
+
+    var snapSection = document.createElement("div");
+    snapSection.className = "fin-section";
+    snapSection.innerHTML = '<h2 class="sec-title">Monthly snapshot</h2>';
+    var snapRow = document.createElement("div");
+    snapRow.className = "fin-controls";
+    var dateCtl = document.createElement("div");
+    dateCtl.className = "fin-ctl"; dateCtl.innerHTML = "<label>Snapshot date</label>";
+    var dateInp = document.createElement("input");
+    dateInp.type = "date"; dateInp.className = "fin-select"; dateInp.value = todayISO();
+    dateCtl.appendChild(dateInp);
+    snapRow.appendChild(dateCtl);
+    var saveBtn = document.createElement("button");
+    saveBtn.className = "log-btn"; saveBtn.style.alignSelf = "flex-end"; saveBtn.textContent = "Save snapshot";
+    saveBtn.addEventListener("click", function(){
+      var t = netWorthTotals();
+      state.investments.snapshots.push({ id:uid(), date:dateInp.value || todayISO(), totalAssets:t.totalAssets, totalLiabilities:t.totalLiabilities, netWorth:t.netWorth });
+      scheduleSave();
+      renderMain();
+    });
+    snapRow.appendChild(saveBtn);
+    snapSection.appendChild(snapRow);
+
+    var snaps = state.investments.snapshots.slice().sort(function(a,b){ return new Date(a.date) - new Date(b.date); });
+    if(!snaps.length){
+      var noSnap = document.createElement("p");
+      noSnap.className = "empty"; noSnap.style.marginTop = "16px";
+      noSnap.textContent = "No snapshots saved yet. Editing your figures above never changes a snapshot once it's saved.";
+      snapSection.appendChild(noSnap);
+    }else{
+      var withDelta = snaps.map(function(s, i){ return { s:s, delta: i > 0 ? s.netWorth - snaps[i-1].netWorth : null }; });
+      withDelta.reverse();
+      var snapTableWrap = document.createElement("div");
+      snapTableWrap.className = "fin-table-wrap"; snapTableWrap.style.marginTop = "16px";
+      var snapTable = document.createElement("table");
+      snapTable.className = "fin-table";
+      snapTable.innerHTML = '<thead><tr><th>Date</th><th>Total Assets</th><th>Total Liabilities</th><th>Net Worth</th><th>\u0394 vs previous</th><th></th></tr></thead>';
+      var snapBody = document.createElement("tbody");
+      withDelta.forEach(function(entry){
+        var s = entry.s;
+        var tr = document.createElement("tr");
+        tr.className = "fin-row";
+        var deltaText = entry.delta === null ? "\u2014" : ((entry.delta >= 0 ? "+" : "") + fmtINRz(entry.delta));
+        tr.innerHTML =
+          "<td>" + s.date + "</td>" +
+          "<td>" + fmtINRz(s.totalAssets) + "</td>" +
+          "<td>" + fmtINRz(s.totalLiabilities) + "</td>" +
+          "<td>" + fmtINRz(s.netWorth) + "</td>" +
+          '<td style="color:' + (entry.delta > 0 ? FINANCE_ACCENT : (entry.delta < 0 ? FINANCE_NEGATIVE_COLOR : "inherit")) + ';">' + deltaText + "</td>" +
+          "<td></td>";
+        var delBtn = document.createElement("button");
+        delBtn.className = "s-remove"; delBtn.type = "button"; delBtn.textContent = "\u00d7";
+        delBtn.addEventListener("click", function(){
+          if(!confirm("Delete this snapshot? Your current asset and liability figures are not affected.")) return;
+          state.investments.snapshots = state.investments.snapshots.filter(function(x){ return x.id !== s.id; });
+          scheduleSave(); renderMain();
+        });
+        tr.lastElementChild.appendChild(delBtn);
+        snapBody.appendChild(tr);
+      });
+      snapTable.appendChild(snapBody);
+      snapTableWrap.appendChild(snapTable);
+      snapSection.appendChild(snapTableWrap);
+    }
+    view.appendChild(snapSection);
+  }
+
+  function buildAmountListSection(title, list, amountKey, addLabel, onAdd){
+    var section = document.createElement("div");
+    section.className = "fin-section";
+    section.innerHTML = '<h2 class="sec-title">' + title + '</h2>';
+    var listWrap = document.createElement("div");
+    listWrap.className = "sub-list";
+    list.forEach(function(item){
+      listWrap.appendChild(buildAmountRow(item, amountKey));
+    });
+    section.appendChild(listWrap);
+    var addBtn = document.createElement("button");
+    addBtn.className = "add-chip";
+    addBtn.style.marginTop = "10px";
+    addBtn.textContent = addLabel;
+    addBtn.addEventListener("click", onAdd);
+    section.appendChild(addBtn);
+    return section;
+  }
+
+  function buildAmountRow(item, amountKey){
+    var row = document.createElement("div");
+    row.className = "sub-row";
+    var nameInp = document.createElement("input");
+    nameInp.type = "text"; nameInp.className = "s-name"; nameInp.placeholder = "Name";
+    nameInp.value = item.name || "";
+    nameInp.addEventListener("input", function(){ item.name = nameInp.value; scheduleSave(); });
+    var amtInp = document.createElement("input");
+    amtInp.type = "number"; amtInp.className = "s-url"; amtInp.placeholder = "Amount";
+    amtInp.value = item[amountKey];
+    amtInp.addEventListener("input", function(){ item[amountKey] = parseFloat(amtInp.value) || 0; scheduleSave(); refreshNetWorthSummary(); });
+    var rmBtn = document.createElement("button");
+    rmBtn.className = "s-remove"; rmBtn.type = "button"; rmBtn.textContent = "\u00d7";
+    rmBtn.addEventListener("click", function(){
+      var arr = state.investments.netWorth.property.indexOf(item) !== -1 ? state.investments.netWorth.property
+        : state.investments.netWorth.otherAssets.indexOf(item) !== -1 ? state.investments.netWorth.otherAssets
+        : state.investments.netWorth.liabilities;
+      var idx = arr.indexOf(item);
+      if(idx !== -1) arr.splice(idx, 1);
+      scheduleSave();
+      renderMain();
+    });
+    row.appendChild(nameInp); row.appendChild(amtInp); row.appendChild(rmBtn);
+    return row;
+  }
+
+  function refreshNetWorthSummary(){
+    var c = document.getElementById("nwSummary");
+    if(c) renderNetWorthSummaryInto(c);
+  }
+
+  function renderNetWorthSummaryInto(container){
+    container.innerHTML = "";
+    var t = netWorthTotals();
+    var summary = document.createElement("div");
+    summary.className = "fin-summary";
+    [
+      ["Total Assets", fmtINRz(t.totalAssets)],
+      ["Total Liabilities", fmtINRz(t.totalLiabilities)],
+      ["Net Worth", fmtINRz(t.netWorth)],
+      ["Investments (auto-included)", fmtINRz(t.investmentsCurrent)]
+    ].forEach(function(c){
+      var card = document.createElement("div");
+      card.className = "fin-card";
+      card.innerHTML = '<div class="fc-label">' + c[0] + '</div><div class="fc-value">' + c[1] + '</div>';
+      summary.appendChild(card);
+    });
+    container.appendChild(summary);
+  }
+
   function buildDomain(view, key){
     var def = domainDef(key);
     var d = state.domains[key];
@@ -2552,6 +2971,7 @@
             if(parsed.forecast.reserve.minReserveTarget !== undefined) base.forecast.reserve.minReserveTarget = parsed.forecast.reserve.minReserveTarget;
           }
         }
+        if(parsed.investments) mergeInvestments(base.investments, parsed.investments);
         state = base;
         scheduleSave(); renderMain();
       }catch(err){ alert("Could not read that file \u2014 is it a life tracker export?"); }
