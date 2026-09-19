@@ -291,13 +291,16 @@
   var DOMAIN_DEFS = [
     { key:"professional", name:"Professional", subtitle:"Career & craft", accent:"#5B8DEF", gem:"Sapphire",
       subs:[ {name:"Professional Profile", url:""}, {name:"Skills & Competencies", url:""}, {name:"Career Strategy", url:""} ] },
-    { key:"dreams", name:"Dreams & Goals", subtitle:"Vision & aspirations", accent:"#B98CE8", gem:"Amethyst",
-      subs:[ {name:"Dreams & Vision", url:""}, {name:"Goals", url:""}, {name:"Bucket List", url:""} ] },
     { key:"mental", name:"Mental Life", subtitle:"Mind & inner world", accent:"#D9D3E6", gem:"Pearl",
       subs:[ {name:"Journaling", url:""}, {name:"Mindfulness Practice", url:""}, {name:"Reflection Notes", url:""} ] },
     { key:"health", name:"Health", subtitle:"Body & recovery", accent:"#E85D75", gem:"Ruby",
       subs:[ {name:"Health Report Upload", url:""}, {name:"Key Findings", url:""}, {name:"Abnormal Values", url:""}, {name:"Borderline Values", url:""}, {name:"Doctor Questions", url:""}, {name:"Lifestyle Actions", url:""}, {name:"Follow-up Date", url:""}, {name:"Next Test Date", url:""} ] }
   ];
+
+  var GOALS_ACCENT = "#B98CE8";
+  var GOALS_GEM = "Amethyst";
+  var GOALS_ATTENTION_COLOR = "#E8C766";
+  var GOALS_OVERDUE_COLOR = "#E85D75";
 
   var FINANCE_ACCENT = "#34C99B";
   var FINANCE_GEM = "Emerald";
@@ -473,6 +476,26 @@
       totalAssets:totalAssets, totalLiabilities:liabTotal, netWorth:totalAssets - liabTotal,
       investmentsCurrent:inv.current, bankCash:bankCash, propertyTotal:propertyTotal, otherTotal:otherTotal, liabTotal:liabTotal
     };
+  }
+
+  /* ---------------- dreams & goals ---------------- */
+
+  function goalTotals(){
+    var financial = state.goals.filter(function(g){ return g.type === "financial"; });
+    var estimated = financial.reduce(function(s,g){ return s + (parseFloat(g.estimatedAmount) || 0); }, 0);
+    var allocated = financial.reduce(function(s,g){ return s + (parseFloat(g.allocatedAmount) || 0); }, 0);
+    return { estimated:estimated, allocated:allocated, remaining:estimated - allocated, count:state.goals.length, financialCount:financial.length };
+  }
+
+  function goalDateStatus(g){
+    if(!g.targetDate) return null;
+    var today = new Date(); today.setHours(0,0,0,0);
+    var target = new Date(g.targetDate + "T00:00:00");
+    if(isNaN(target.getTime())) return null;
+    var diffDays = Math.round((target - today) / 86400000);
+    if(diffDays < 0) return { level:"overdue", days:diffDays };
+    if(diffDays <= 60) return { level:"approaching", days:diffDays };
+    return { level:"ontrack", days:diffDays };
   }
 
   /* ---------------- forecast: constants & assumptions ---------------- */
@@ -785,7 +808,8 @@
         holdings: [],
         netWorth: { bankCash: 0, property: [], otherAssets: [], liabilities: [] },
         snapshots: []
-      }
+      },
+      goals: []
     };
   }
   function loadState(){
@@ -817,6 +841,7 @@
         }
       }
       if(parsed.investments) mergeInvestments(base.investments, parsed.investments);
+      base.goals = Array.isArray(parsed.goals) ? parsed.goals : [];
       return base;
     }catch(e){ console.error("load failed", e); return defaultState(); }
   }
@@ -887,6 +912,7 @@
   function accentForTab(key){
     if(key === "finance") return FINANCE_ACCENT;
     if(key === "investments") return INVESTMENTS_ACCENT;
+    if(key === "dreams") return GOALS_ACCENT;
     var def = domainDef(key);
     return def ? def.accent : GOLD;
   }
@@ -922,6 +948,7 @@
     else if(activeTab === "profile") buildProfile(view);
     else if(activeTab === "finance") buildFinance(view);
     else if(activeTab === "investments") buildInvestments(view);
+    else if(activeTab === "dreams") buildGoals(view);
     else buildDomain(view, activeTab);
   }
 
@@ -982,6 +1009,22 @@
       '<p class="preview">' + (hasInvData ? ("Net worth " + fmtINR(nw.netWorth)) : "No data yet") + '</p>';
     invTile.addEventListener("click", function(){ setActiveTab("investments"); });
     tiles.appendChild(invTile);
+
+    var gTotals = goalTotals();
+    var goalsTile = document.createElement("div");
+    goalsTile.className = "tile";
+    var flaggedGoals = state.goals.filter(function(g){ var s = goalDateStatus(g); return s && (s.level === "overdue" || s.level === "approaching"); }).length;
+    var goalsChip = state.goals.length
+      ? ('<span class="status-chip" style="color:' + (flaggedGoals ? GOALS_ATTENTION_COLOR : GOALS_ACCENT) + '">' + (flaggedGoals ? (flaggedGoals + " due soon") : "on track") + '</span>')
+      : '<span class="status-chip">not set</span>';
+    goalsTile.innerHTML =
+      '<div style="position:absolute;top:0;left:0;right:0;height:3px;background:' + GOALS_ACCENT + ';"></div>' +
+      goalsChip +
+      '<h3>Dreams &amp; Goals</h3>' +
+      '<p class="tsub">Vision &amp; aspirations &middot; ' + GOALS_GEM + '</p>' +
+      '<p class="preview">' + (state.goals.length ? (state.goals.length + " goal" + (state.goals.length === 1 ? "" : "s") + " tracked") : "No goals yet") + '</p>';
+    goalsTile.addEventListener("click", function(){ setActiveTab("dreams"); });
+    tiles.appendChild(goalsTile);
 
     DOMAIN_DEFS.forEach(function(def){
       var d = state.domains[def.key];
@@ -2974,6 +3017,236 @@
     view.appendChild(caveat);
   }
 
+  function buildGoals(view){
+    view.innerHTML =
+      '<div class="focus-eyebrow">DREAMS &amp; GOALS &middot; AMETHYST</div>' +
+      '<div class="focus-title" style="font-size:36px; margin-bottom:10px;">Goal tracker</div>';
+
+    var intro = document.createElement("p");
+    intro.className = "hero-loop";
+    intro.style.marginBottom = "24px";
+    intro.textContent = "Allocated amounts are always what you type here \u2014 nothing is pulled automatically from your bank balance, investments, property equity, or forecast surplus.";
+    view.appendChild(intro);
+
+    var summary = document.createElement("div");
+    summary.id = "goalsSummary";
+    view.appendChild(summary);
+    renderGoalsSummaryInto(summary);
+
+    var flagged = state.goals.filter(function(g){ var s = goalDateStatus(g); return s && (s.level === "overdue" || s.level === "approaching"); });
+    if(flagged.length){
+      var flagSection = document.createElement("div");
+      flagSection.className = "fin-section";
+      flagSection.innerHTML = '<h2 class="sec-title">Approaching or overdue</h2>';
+      flagged.sort(function(a,b){ return new Date(a.targetDate) - new Date(b.targetDate); }).forEach(function(g){
+        var s = goalDateStatus(g);
+        var row = document.createElement("div");
+        row.className = "attn-row";
+        var text = s.level === "overdue" ? (Math.abs(s.days) + " day" + (Math.abs(s.days) === 1 ? "" : "s") + " past target date")
+          : (s.days + " day" + (s.days === 1 ? "" : "s") + " until target date");
+        row.innerHTML =
+          '<span class="dot" style="background:' + (s.level === "overdue" ? GOALS_OVERDUE_COLOR : GOALS_ATTENTION_COLOR) + '"></span>' +
+          '<span class="a-name">' + escapeHtml(g.name || "(unnamed goal)") + '</span>' +
+          '<span class="a-text">' + text + '</span>';
+        flagSection.appendChild(row);
+      });
+      view.appendChild(flagSection);
+    }
+
+    var tableSection = document.createElement("div");
+    tableSection.className = "fin-section";
+    tableSection.innerHTML = '<h2 class="sec-title">All goals</h2>';
+    var tableWrap = document.createElement("div");
+    tableWrap.className = "fin-table-wrap";
+    var table = document.createElement("table");
+    table.className = "fin-table";
+    table.innerHTML =
+      '<thead><tr><th>Goal</th><th>Target Date</th><th>Type</th><th>Priority</th><th>Estimated</th><th>Allocated</th>' +
+      '<th>Remaining</th><th>Progress</th><th>Notes</th><th></th></tr></thead>';
+    var tbody = document.createElement("tbody");
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    tableSection.appendChild(tableWrap);
+
+    if(!state.goals.length){
+      var empty = document.createElement("p");
+      empty.className = "empty";
+      empty.style.marginTop = "14px";
+      empty.textContent = "No goals yet \u2014 add your first one below.";
+      tableSection.appendChild(empty);
+    }
+    view.appendChild(tableSection);
+
+    state.goals.forEach(function(g){ tbody.appendChild(buildGoalRow(g)); });
+
+    var addBtn = document.createElement("button");
+    addBtn.className = "add-chip";
+    addBtn.style.marginTop = "14px";
+    addBtn.textContent = "+ add goal";
+    addBtn.addEventListener("click", function(){
+      state.goals.push({ id:uid(), name:"", targetDate:"", type:"financial", estimatedAmount:0, allocatedAmount:0, priority:"Medium", notes:"" });
+      scheduleSave();
+      renderMain();
+    });
+    view.appendChild(addBtn);
+  }
+
+  function smallTextInput(value, placeholder, width){
+    var inp = document.createElement("input");
+    inp.type = "text"; inp.placeholder = placeholder || ""; inp.value = value || "";
+    inp.style.background = "transparent"; inp.style.border = "none"; inp.style.borderBottom = "1px solid var(--line)";
+    inp.style.color = "var(--ink)"; inp.style.padding = "3px 2px"; inp.style.width = (width || 120) + "px";
+    return inp;
+  }
+  function smallNumberInput(value, width){
+    var inp = document.createElement("input");
+    inp.type = "number"; inp.value = value;
+    inp.style.background = "transparent"; inp.style.border = "none"; inp.style.borderBottom = "1px solid var(--line)";
+    inp.style.color = "var(--ink)"; inp.style.fontFamily = "'JetBrains Mono', monospace"; inp.style.fontSize = "12.5px";
+    inp.style.padding = "3px 2px"; inp.style.width = (width || 100) + "px";
+    return inp;
+  }
+
+  function buildGoalRow(g){
+    var row = document.createElement("tr");
+    row.className = "fin-row";
+    row.id = "goal-row-" + g.id;
+
+    var nameCell = document.createElement("td");
+    var nameInp = smallTextInput(g.name, "Goal name", 150);
+    nameInp.addEventListener("input", function(){ g.name = nameInp.value; scheduleSave(); });
+    nameCell.appendChild(nameInp);
+    row.appendChild(nameCell);
+
+    var dateCell = document.createElement("td");
+    var dateInp = document.createElement("input");
+    dateInp.type = "date"; dateInp.value = g.targetDate || "";
+    dateInp.style.background = "transparent"; dateInp.style.border = "none"; dateInp.style.borderBottom = "1px solid var(--line)";
+    dateInp.style.color = "var(--ink)"; dateInp.style.fontFamily = "'JetBrains Mono', monospace"; dateInp.style.fontSize = "11.5px";
+    dateInp.addEventListener("change", function(){ g.targetDate = dateInp.value; scheduleSave(); renderMain(); });
+    dateCell.appendChild(dateInp);
+    row.appendChild(dateCell);
+
+    var typeCell = document.createElement("td");
+    var typeSel = document.createElement("select");
+    typeSel.className = "fin-select";
+    [["financial","Financial"], ["nonfinancial","Non-financial"]].forEach(function(p){
+      var o = document.createElement("option"); o.value = p[0]; o.textContent = p[1];
+      if(g.type === p[0]) o.selected = true;
+      typeSel.appendChild(o);
+    });
+    typeSel.addEventListener("change", function(){ g.type = typeSel.value; scheduleSave(); renderMain(); });
+    typeCell.appendChild(typeSel);
+    row.appendChild(typeCell);
+
+    var prioCell = document.createElement("td");
+    var prioSel = document.createElement("select");
+    prioSel.className = "fin-select";
+    ["High","Medium","Low"].forEach(function(p){
+      var o = document.createElement("option"); o.value = p; o.textContent = p;
+      if(g.priority === p) o.selected = true;
+      prioSel.appendChild(o);
+    });
+    prioSel.addEventListener("change", function(){ g.priority = prioSel.value; scheduleSave(); });
+    prioCell.appendChild(prioSel);
+    row.appendChild(prioCell);
+
+    var estCell = document.createElement("td");
+    var allocCell = document.createElement("td");
+    if(g.type === "financial"){
+      var estInp = smallNumberInput(g.estimatedAmount, 100);
+      estInp.addEventListener("input", function(){
+        g.estimatedAmount = parseFloat(estInp.value) || 0;
+        scheduleSave(); updateGoalRow(g.id); refreshGoalsSummary();
+      });
+      estCell.appendChild(estInp);
+
+      var allocInp = smallNumberInput(g.allocatedAmount, 100);
+      allocInp.addEventListener("input", function(){
+        g.allocatedAmount = parseFloat(allocInp.value) || 0;
+        scheduleSave(); updateGoalRow(g.id); refreshGoalsSummary();
+      });
+      allocCell.appendChild(allocInp);
+    }else{
+      estCell.textContent = "\u2014";
+      allocCell.textContent = "\u2014";
+    }
+    row.appendChild(estCell);
+    row.appendChild(allocCell);
+
+    var remCell = document.createElement("td");
+    remCell.id = "goal-remaining-" + g.id;
+    row.appendChild(remCell);
+
+    var progCell = document.createElement("td");
+    progCell.id = "goal-progress-" + g.id;
+    row.appendChild(progCell);
+
+    var notesCell = document.createElement("td");
+    var notesInp = smallTextInput(g.notes, "Notes", 160);
+    notesInp.addEventListener("input", function(){ g.notes = notesInp.value; scheduleSave(); });
+    notesCell.appendChild(notesInp);
+    row.appendChild(notesCell);
+
+    var rmCell = document.createElement("td");
+    var rmBtn = document.createElement("button");
+    rmBtn.className = "s-remove"; rmBtn.type = "button"; rmBtn.textContent = "\u00d7";
+    rmBtn.addEventListener("click", function(){
+      state.goals = state.goals.filter(function(x){ return x.id !== g.id; });
+      scheduleSave();
+      renderMain();
+    });
+    rmCell.appendChild(rmBtn);
+    row.appendChild(rmCell);
+
+    setTimeout(function(){ updateGoalRow(g.id); }, 0);
+    return row;
+  }
+
+  function updateGoalRow(id){
+    var g = state.goals.find(function(x){ return x.id === id; });
+    var remEl = document.getElementById("goal-remaining-" + id);
+    var progEl = document.getElementById("goal-progress-" + id);
+    if(!g || g.type !== "financial"){
+      if(remEl) remEl.textContent = "\u2014";
+      if(progEl) progEl.textContent = "\u2014";
+      return;
+    }
+    var est = parseFloat(g.estimatedAmount) || 0;
+    var alloc = parseFloat(g.allocatedAmount) || 0;
+    var remaining = est - alloc;
+    var progress = est !== 0 ? (alloc / est * 100) : 0;
+    if(remEl){
+      remEl.textContent = fmtINRz(remaining);
+      remEl.style.color = remaining < 0 ? GOALS_ACCENT : "inherit";
+    }
+    if(progEl) progEl.textContent = fmtPctz(progress);
+  }
+
+  function refreshGoalsSummary(){
+    var c = document.getElementById("goalsSummary");
+    if(c) renderGoalsSummaryInto(c);
+  }
+
+  function renderGoalsSummaryInto(container){
+    container.innerHTML = "";
+    var t = goalTotals();
+    var summary = document.createElement("div");
+    summary.className = "fin-summary";
+    [
+      ["Goals tracked", t.count + " (" + t.financialCount + " financial)"],
+      ["Total estimated", fmtINRz(t.estimated)],
+      ["Total allocated", fmtINRz(t.allocated)],
+      ["Total remaining", fmtINRz(t.remaining)]
+    ].forEach(function(c){
+      var card = document.createElement("div");
+      card.className = "fin-card";
+      card.innerHTML = '<div class="fc-label">' + c[0] + '</div><div class="fc-value">' + c[1] + '</div>';
+      summary.appendChild(card);
+    });
+    container.appendChild(summary);
+  }
+
   function buildDomain(view, key){
     var def = domainDef(key);
     var d = state.domains[key];
@@ -3216,6 +3489,7 @@
           }
         }
         if(parsed.investments) mergeInvestments(base.investments, parsed.investments);
+        base.goals = Array.isArray(parsed.goals) ? parsed.goals : [];
         state = base;
         scheduleSave(); renderMain();
       }catch(err){ alert("Could not read that file \u2014 is it a life tracker export?"); }
