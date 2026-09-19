@@ -229,6 +229,8 @@
   .fin-notes label{ display:block; font-family:'JetBrains Mono', monospace; font-size:10px; color:var(--faint); margin-bottom:8px; }
   .fin-notes textarea{ width:100%; min-height:60px; resize:vertical; background:var(--bg); border:1px solid var(--line); border-radius:8px; color:var(--ink); padding:10px; font-family:inherit; font-size:13px; }
   .fin-toolbar{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:20px; }
+  .fin-recorded-toggle{ display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--muted); margin-bottom:16px; cursor:pointer; }
+  .fin-recorded-toggle input{ width:15px; height:15px; }
   .fin-toolbar button{ background:none; border:1px solid var(--line); color:var(--gold-2); border-radius:16px; padding:6px 14px; font-size:11px; cursor:pointer; transition:all .18s ease; }
   .fin-toolbar button:hover:not(:disabled){ background:var(--gold); color:#1B140A; }
   .fin-toolbar button:disabled{ opacity:0.35; cursor:not-allowed; }
@@ -381,11 +383,32 @@
     var o = {};
     INCOME_FIELDS.concat(DEDUCTION_FIELDS).concat(INVESTMENT_FIELDS).concat(EXPENSE_FIELDS).forEach(function(f){ o[f[0]] = 0; });
     o.notes = "";
+    o.recorded = false;
     return o;
   }
   function ensureFYData(fy){
     if(!state.finance.fy[fy]) state.finance.fy[fy] = { months:{} };
     MONTHS.forEach(function(mo){ if(!state.finance.fy[fy].months[mo]) state.finance.fy[fy].months[mo] = newMonthObj(); });
+  }
+  function monthHasAnyData(m){
+    var fields = INCOME_FIELDS.concat(DEDUCTION_FIELDS).concat(INVESTMENT_FIELDS).concat(EXPENSE_FIELDS);
+    return fields.some(function(f){ return (parseFloat(m[f[0]]) || 0) !== 0; }) || !!(m.notes && m.notes.trim());
+  }
+  function migrateRecordedFlags(fyMap){
+    // One-time backward-compatible upgrade: data saved before the "recorded" flag existed
+    // has no such field. For those months only, infer recorded=true if anything was
+    // actually entered, so existing Actual entries keep counting in insights without
+    // requiring the user to re-mark them. Months with the flag already present (new
+    // format, or already explicitly set/unset by the user) are left exactly as saved.
+    Object.keys(fyMap || {}).forEach(function(fy){
+      var months = fyMap[fy] && fyMap[fy].months;
+      if(!months) return;
+      MONTHS.forEach(function(mo){
+        var m = months[mo];
+        if(!m) return;
+        if(m.recorded === undefined){ m.recorded = monthHasAnyData(m); }
+      });
+    });
   }
   function sumFields(obj, fields){ return fields.reduce(function(s,f){ return s + (parseFloat(obj[f[0]]) || 0); }, 0); }
   function monthTotals(m){
@@ -435,25 +458,25 @@
 
   function defaultForecastAssumptions(){
     return {
-      grossSalary: 220000, incomeTax: 30000, pf: 9500, nps: 10000,
-      bonusPercent: 5, bonusTaxPercent: 30,
-      rentBeforeDec2026: 25000, rentFromDec2026: 26500, rentIncreasePercent: 10,
-      milkPerDay: 76, groceries: 4000, vegFruits: 3500, amazonPayLater: 2500,
-      electricity: 3000, fuel: 2500, lifeInsurance: 3000, mobile: 1000,
-      onlineShoppingFood: 5000, maid: 1200, carWash: 900, stationery: 1500,
-      subscriptions: 4000, misc: 5000,
+      grossSalary: 0, incomeTax: 0, pf: 0, nps: 0,
+      bonusPercent: 0, bonusTaxPercent: 0,
+      rentBeforeDec2026: 0, rentFromDec2026: 0, rentIncreasePercent: 0,
+      milkPerDay: 0, groceries: 0, vegFruits: 0, amazonPayLater: 0,
+      electricity: 0, fuel: 0, lifeInsurance: 0, mobile: 0,
+      onlineShoppingFood: 0, maid: 0, carWash: 0, stationery: 0,
+      subscriptions: 0, misc: 0,
       emis: {
-        personalLoan: { label:"Personal loan EMI", amount:10000, endYear:2027, endMonth:8 },
-        axisEmi:      { label:"Axis EMI",           amount:10000, endYear:2027, endMonth:8 },
-        carEmi:       { label:"Car EMI",             amount:20000, endYear:2027, endMonth:10 },
-        landLoanEmi:  { label:"Land loan EMI",       amount:55000, endYear:2032, endMonth:6 }
+        personalLoan: { label:"Personal loan EMI", amount:0, endYear:FORECAST_START.y, endMonth:FORECAST_START.m },
+        axisEmi:      { label:"Axis EMI",           amount:0, endYear:FORECAST_START.y, endMonth:FORECAST_START.m },
+        carEmi:       { label:"Car EMI",             amount:0, endYear:FORECAST_START.y, endMonth:FORECAST_START.m },
+        landLoanEmi:  { label:"Land loan EMI",       amount:0, endYear:FORECAST_START.y, endMonth:FORECAST_START.m }
       },
       annualBills: {
-        healthInsurance: { label:"Health insurance", month:4,  amount:20000 },
-        carInsurance:    { label:"Car insurance",     month:7,  amount:25000 },
-        schoolFeesFeb:   { label:"School fees (Feb)", month:2,  amount:10000 },
-        schoolFeesJun:   { label:"School fees (Jun)", month:6,  amount:15000 },
-        schoolFeesOct:   { label:"School fees (Oct)", month:10, amount:25000 }
+        healthInsurance: { label:"Health insurance", month:4,  amount:0 },
+        carInsurance:    { label:"Car insurance",     month:7,  amount:0 },
+        schoolFeesFeb:   { label:"School fees (Feb)", month:2,  amount:0 },
+        schoolFeesJun:   { label:"School fees (Jun)", month:6,  amount:0 },
+        schoolFeesOct:   { label:"School fees (Oct)", month:10, amount:0 }
       }
     };
   }
@@ -604,6 +627,7 @@
         base.finance.currentFY = parsed.finance.currentFY || base.finance.currentFY;
         base.finance.targetSavingsRate = (parsed.finance.targetSavingsRate !== undefined) ? parsed.finance.targetSavingsRate : base.finance.targetSavingsRate;
         base.finance.fy = parsed.finance.fy || {};
+        migrateRecordedFlags(base.finance.fy);
       }
       if(parsed.forecast){
         if(parsed.forecast.assumptions) mergeForecastAssumptions(base.forecast.assumptions, parsed.forecast.assumptions);
@@ -984,8 +1008,10 @@
       var monthObj = monthsData[mo];
       var row = document.createElement("tr");
       row.className = "fin-row";
+      row.id = "fin-tr-" + mo;
+      if(!monthObj.recorded) row.style.opacity = "0.5";
       row.innerHTML =
-        '<td>' + mo + '</td>' +
+        '<td>' + mo + (monthObj.recorded ? "" : ' <span style="font-size:9.5px; color:var(--faint);">(unrecorded)</span>') + '</td>' +
         '<td id="fin-cell-' + mo + '-gross">\u2014</td>' +
         '<td id="fin-cell-' + mo + '-ded">\u2014</td>' +
         '<td id="fin-cell-' + mo + '-inv">\u2014</td>' +
@@ -1110,6 +1136,43 @@
     rangeHeader.appendChild(rangeControls);
     view.appendChild(rangeHeader);
 
+    var resultsContainer = document.createElement("div");
+    resultsContainer.id = "forecastResults";
+    view.appendChild(resultsContainer);
+    renderForecastResultsInto(resultsContainer);
+
+    /* assumptions panel (collapsible) */
+    var assumeSection = document.createElement("div");
+    assumeSection.className = "fin-section";
+    var assumeHead = document.createElement("div");
+    assumeHead.className = "subhead";
+    assumeHead.innerHTML = '<h2 class="sec-title">Forecast assumptions</h2>';
+    var toggleBtn = document.createElement("button");
+    toggleBtn.className = "add-chip";
+    toggleBtn.textContent = forecastAssumptionsOpen ? "Hide" : "Edit assumptions";
+    toggleBtn.addEventListener("click", function(){ forecastAssumptionsOpen = !forecastAssumptionsOpen; renderMain(); });
+    assumeHead.appendChild(toggleBtn);
+    assumeSection.appendChild(assumeHead);
+    if(forecastAssumptionsOpen){
+      var note0 = document.createElement("p");
+      note0.className = "empty";
+      note0.style.marginBottom = "16px";
+      note0.textContent = "These are your own private assumptions, entered here and saved only to this browser \u2014 never hard-coded in the app's source.";
+      assumeSection.appendChild(note0);
+      assumeSection.appendChild(buildForecastAssumptionsForm(a));
+    }
+    view.appendChild(assumeSection);
+  }
+
+  function refreshForecastResults(){
+    var container = document.getElementById("forecastResults");
+    if(container) renderForecastResultsInto(container);
+  }
+
+  function renderForecastResultsInto(container){
+    container.innerHTML = "";
+    var fc = state.forecast;
+    var a = fc.assumptions;
     var range = currentForecastRange();
     var months = generateForecastMonths(range, a);
 
@@ -1137,7 +1200,7 @@
       card.innerHTML = '<div class="fc-label">' + c[0] + '</div><div class="fc-value">' + c[1] + '</div>';
       summary.appendChild(card);
     });
-    view.appendChild(summary);
+    container.appendChild(summary);
 
     /* annual bill provision note */
     var provisionTotal = ANNUAL_BILL_KEYS.reduce(function(s,k){ return s + a.annualBills[k].amount; }, 0);
@@ -1145,7 +1208,7 @@
     note.className = "empty";
     note.style.marginBottom = "30px";
     note.innerHTML = "Planning indicator only (not subtracted in the cash-flow math below): annual bills total " + fmtINR(provisionTotal) + "/yr \u2248 " + fmtINR(provisionTotal/12) + "/month if you wanted to set that much aside monthly instead.";
-    view.appendChild(note);
+    container.appendChild(note);
 
     /* EMI milestones */
     var milestoneSection = document.createElement("div");
@@ -1161,7 +1224,7 @@
         '<span class="a-text">' + fmtINR(emi.amount) + "/mo \u2014 last payment " + ymLabel(emi.endYear, emi.endMonth) + (inRange ? " (in selected range)" : "") + '</span>';
       milestoneSection.appendChild(row);
     });
-    view.appendChild(milestoneSection);
+    container.appendChild(milestoneSection);
 
     /* upcoming large payments (annual bills) within range */
     var upcomingSection = document.createElement("div");
@@ -1188,24 +1251,7 @@
       });
     }
     upcomingSection.appendChild(upcomingList);
-    view.appendChild(upcomingSection);
-
-    /* assumptions panel (collapsible) */
-    var assumeSection = document.createElement("div");
-    assumeSection.className = "fin-section";
-    var assumeHead = document.createElement("div");
-    assumeHead.className = "subhead";
-    assumeHead.innerHTML = '<h2 class="sec-title">Forecast assumptions</h2>';
-    var toggleBtn = document.createElement("button");
-    toggleBtn.className = "add-chip";
-    toggleBtn.textContent = forecastAssumptionsOpen ? "Hide" : "Edit assumptions";
-    toggleBtn.addEventListener("click", function(){ forecastAssumptionsOpen = !forecastAssumptionsOpen; renderMain(); });
-    assumeHead.appendChild(toggleBtn);
-    assumeSection.appendChild(assumeHead);
-    if(forecastAssumptionsOpen){
-      assumeSection.appendChild(buildForecastAssumptionsForm(a));
-    }
-    view.appendChild(assumeSection);
+    container.appendChild(upcomingSection);
 
     /* monthly forecast table */
     var tableSection = document.createElement("div");
@@ -1223,15 +1269,14 @@
     table.appendChild(tbody);
     tableWrap.appendChild(table);
     tableSection.appendChild(tableWrap);
-    view.appendChild(tableSection);
+    container.appendChild(tableSection);
 
     months.forEach(function(mo){
       var row = document.createElement("tr");
       row.className = "fin-row";
       if(mo.cashRemaining < 0) row.style.background = "rgba(228,120,143,0.10)";
-      var monthKey = mo.year + "-" + mo.month;
       row.innerHTML =
-        "<td>" + ymLabel(mo.year, mo.month) + (mo.activeEmis.length ? "" : "") + "</td>" +
+        "<td>" + ymLabel(mo.year, mo.month) + "</td>" +
         "<td>" + fmtINRz(mo.grossSalary) + "</td>" +
         "<td>" + fmtINRz(mo.grossBonus) + "</td>" +
         "<td>" + fmtINRz(mo.regularTax) + "</td>" +
@@ -1257,7 +1302,7 @@
       obj[key] = parseFloat(inp.value) || 0;
       scheduleSave();
       if(onChange) onChange();
-      else renderMain();
+      else refreshForecastResults();
     });
     row.appendChild(lab); row.appendChild(inp);
     return row;
@@ -1311,7 +1356,7 @@
       var lab = document.createElement("label"); lab.textContent = emi.label + " amount";
       var amtInp = document.createElement("input");
       amtInp.type = "number"; amtInp.value = emi.amount;
-      amtInp.addEventListener("input", function(){ emi.amount = parseFloat(amtInp.value) || 0; scheduleSave(); renderMain(); });
+      amtInp.addEventListener("input", function(){ emi.amount = parseFloat(amtInp.value) || 0; scheduleSave(); refreshForecastResults(); });
       row.appendChild(lab); row.appendChild(amtInp);
       emiGroup.appendChild(row);
 
@@ -1325,7 +1370,7 @@
       monthInp.addEventListener("change", function(){
         var parts = monthInp.value.split("-");
         emi.endYear = parseInt(parts[0], 10); emi.endMonth = parseInt(parts[1], 10);
-        scheduleSave(); renderMain();
+        scheduleSave(); refreshForecastResults();
       });
       row2.appendChild(lab2); row2.appendChild(monthInp);
       emiGroup.appendChild(row2);
@@ -1342,7 +1387,7 @@
       var lab = document.createElement("label"); lab.textContent = bill.label + " amount";
       var amtInp = document.createElement("input");
       amtInp.type = "number"; amtInp.value = bill.amount;
-      amtInp.addEventListener("input", function(){ bill.amount = parseFloat(amtInp.value) || 0; scheduleSave(); renderMain(); });
+      amtInp.addEventListener("input", function(){ bill.amount = parseFloat(amtInp.value) || 0; scheduleSave(); refreshForecastResults(); });
       row.appendChild(lab); row.appendChild(amtInp);
       billGroup.appendChild(row);
 
@@ -1356,7 +1401,7 @@
         if(bill.month === mi) o.selected = true;
         monthSel.appendChild(o);
       }
-      monthSel.addEventListener("change", function(){ bill.month = parseInt(monthSel.value, 10); scheduleSave(); renderMain(); });
+      monthSel.addEventListener("change", function(){ bill.month = parseInt(monthSel.value, 10); scheduleSave(); refreshForecastResults(); });
       row2.appendChild(lab2); row2.appendChild(monthSel);
       billGroup.appendChild(row2);
     });
@@ -1377,6 +1422,28 @@
     var monthsData = state.finance.fy[fy].months;
     var idx = MONTHS.indexOf(mo);
 
+    var recordedRow = document.createElement("label");
+    recordedRow.className = "fin-recorded-toggle";
+    var recordedCb = document.createElement("input");
+    recordedCb.type = "checkbox";
+    recordedCb.checked = !!monthObj.recorded;
+    recordedCb.addEventListener("change", function(){
+      monthObj.recorded = recordedCb.checked;
+      scheduleSave();
+      updateMonthRow(mo, fy);
+      updateSummary(fy);
+    });
+    recordedRow.appendChild(recordedCb);
+    recordedRow.appendChild(document.createTextNode(" This month is recorded \u2014 counts toward insights and averages"));
+    wrap.appendChild(recordedRow);
+
+    function markRecorded(){
+      if(!monthObj.recorded){
+        monthObj.recorded = true;
+        recordedCb.checked = true;
+      }
+    }
+
     var toolbar = document.createElement("div");
     toolbar.className = "fin-toolbar";
 
@@ -1388,6 +1455,7 @@
       var prevObj = monthsData[MONTHS[idx - 1]];
       INCOME_FIELDS.concat(DEDUCTION_FIELDS).concat(INVESTMENT_FIELDS).concat(EXPENSE_FIELDS).forEach(function(f){ monthObj[f[0]] = prevObj[f[0]] || 0; });
       monthObj.notes = prevObj.notes || "";
+      monthObj.recorded = true;
       scheduleSave();
       reRenderFinanceKeepOpen(mo);
     });
@@ -1399,6 +1467,7 @@
       if(!confirm("Clear all entries for " + mo + "? This can't be undone.")) return;
       INCOME_FIELDS.concat(DEDUCTION_FIELDS).concat(INVESTMENT_FIELDS).concat(EXPENSE_FIELDS).forEach(function(f){ monthObj[f[0]] = 0; });
       monthObj.notes = "";
+      monthObj.recorded = false;
       scheduleSave();
       reRenderFinanceKeepOpen(mo);
     });
@@ -1415,10 +1484,10 @@
 
     var groups = document.createElement("div");
     groups.className = "fin-groups";
-    groups.appendChild(buildFieldGroup("Income", INCOME_FIELDS, monthObj, mo, fy));
-    groups.appendChild(buildFieldGroup("Deductions", DEDUCTION_FIELDS, monthObj, mo, fy));
-    groups.appendChild(buildFieldGroup("Investments from Income", INVESTMENT_FIELDS, monthObj, mo, fy));
-    groups.appendChild(buildFieldGroup("Expenses", EXPENSE_FIELDS, monthObj, mo, fy));
+    groups.appendChild(buildFieldGroup("Income", INCOME_FIELDS, monthObj, mo, fy, markRecorded));
+    groups.appendChild(buildFieldGroup("Deductions", DEDUCTION_FIELDS, monthObj, mo, fy, markRecorded));
+    groups.appendChild(buildFieldGroup("Investments from Income", INVESTMENT_FIELDS, monthObj, mo, fy, markRecorded));
+    groups.appendChild(buildFieldGroup("Expenses", EXPENSE_FIELDS, monthObj, mo, fy, markRecorded));
     wrap.appendChild(groups);
 
     var notesWrap = document.createElement("div");
@@ -1428,14 +1497,14 @@
     var ta = document.createElement("textarea");
     ta.value = monthObj.notes || "";
     ta.placeholder = "Anything worth remembering about this month\u2026";
-    ta.addEventListener("input", function(){ monthObj.notes = ta.value; scheduleSave(); });
+    ta.addEventListener("input", function(){ monthObj.notes = ta.value; markRecorded(); scheduleSave(); });
     notesWrap.appendChild(lab); notesWrap.appendChild(ta);
     wrap.appendChild(notesWrap);
 
     return wrap;
   }
 
-  function buildFieldGroup(title, fields, monthObj, mo, fy){
+  function buildFieldGroup(title, fields, monthObj, mo, fy, markRecorded){
     var group = document.createElement("div");
     group.className = "fin-group";
     var h = document.createElement("h4");
@@ -1452,6 +1521,7 @@
       inp.value = monthObj[key] || 0;
       inp.addEventListener("input", function(){
         monthObj[key] = parseFloat(inp.value) || 0;
+        if(markRecorded) markRecorded();
         scheduleSave();
         updateMonthRow(mo, fy);
         updateSummary(fy);
@@ -1472,6 +1542,8 @@
     setText("fin-cell-" + mo + "-exp", fmtINRz(t.exp));
     setText("fin-cell-" + mo + "-sav", fmtINRz(t.sav));
     setText("fin-cell-" + mo + "-rate", fmtPctz(t.rate));
+    var tr = document.getElementById("fin-tr-" + mo);
+    if(tr) tr.style.opacity = state.finance.fy[fy].months[mo].recorded ? "1" : "0.5";
   }
   function updateSummary(fy){
     var agg = fyAggregate(fy);
@@ -1517,19 +1589,21 @@
   function computeInsights(fy){
     ensureFYData(fy);
     var months = state.finance.fy[fy].months;
-    var totals = MONTHS.map(function(mo){ return { mo:mo, t:monthTotals(months[mo]) }; });
-    var hasData = totals.some(function(x){ return x.t.gross > 0 || x.t.exp > 0; });
+    var totals = MONTHS.map(function(mo){ return { mo:mo, t:monthTotals(months[mo]), recorded: !!months[mo].recorded }; });
+    var recordedTotals = totals.filter(function(x){ return x.recorded; });
+    var hasData = recordedTotals.length > 0;
     if(!hasData) return null;
 
-    var highestIncome = totals.reduce(function(a,b){ return b.t.gross > a.t.gross ? b : a; });
-    var highestExpense = totals.reduce(function(a,b){ return b.t.exp > a.t.exp ? b : a; });
-    var lowestSavings = totals.reduce(function(a,b){ return b.t.sav < a.t.sav ? b : a; });
-    var bestRate = totals.reduce(function(a,b){ return b.t.rate > a.t.rate ? b : a; });
-    var avgSavings = totals.reduce(function(s,x){ return s + x.t.sav; }, 0) / 12;
-    var avgInvestments = totals.reduce(function(s,x){ return s + x.t.inv; }, 0) / 12;
-    var totalWealthAllocation = totals.reduce(function(s,x){ return s + x.t.wealth; }, 0);
+    var highestIncome = recordedTotals.reduce(function(a,b){ return b.t.gross > a.t.gross ? b : a; });
+    var highestExpense = recordedTotals.reduce(function(a,b){ return b.t.exp > a.t.exp ? b : a; });
+    var lowestSavings = recordedTotals.reduce(function(a,b){ return b.t.sav < a.t.sav ? b : a; });
+    var bestRate = recordedTotals.reduce(function(a,b){ return b.t.rate > a.t.rate ? b : a; });
+    var recordedCount = recordedTotals.length;
+    var avgSavings = recordedTotals.reduce(function(s,x){ return s + x.t.sav; }, 0) / recordedCount;
+    var avgInvestments = recordedTotals.reduce(function(s,x){ return s + x.t.inv; }, 0) / recordedCount;
+    var totalWealthAllocation = recordedTotals.reduce(function(s,x){ return s + x.t.wealth; }, 0);
     var target = state.finance.targetSavingsRate;
-    var belowTargetCount = totals.filter(function(x){ return x.t.gross > 0 && x.t.rate < target; }).length;
+    var belowTargetCount = recordedTotals.filter(function(x){ return x.t.rate < target; }).length;
 
     var cats = categoryTotals(fy).sort(function(a,b){ return b.total - a.total; });
     var totalExp = cats.reduce(function(s,c){ return s + c.total; }, 0);
@@ -1538,7 +1612,7 @@
     return {
       highestIncome:highestIncome, highestExpense:highestExpense, lowestSavings:lowestSavings, bestRate:bestRate,
       avgSavings:avgSavings, avgInvestments:avgInvestments, totalWealthAllocation:totalWealthAllocation,
-      belowTargetCount:belowTargetCount, topCategory:topCategory
+      belowTargetCount:belowTargetCount, topCategory:topCategory, recordedCount:recordedCount
     };
   }
 
@@ -1548,19 +1622,20 @@
     host.innerHTML = "";
     var ins = computeInsights(fy);
     if(!ins){
-      host.innerHTML = '<p class="empty">Not enough data yet \u2014 fill in a few months above to see insights here.</p>';
+      host.innerHTML = '<p class="empty">Not enough data yet \u2014 mark a month as recorded above (or enter figures, which marks it automatically) to see insights here.</p>';
       return;
     }
+    var monthsWord = ins.recordedCount === 1 ? "recorded month" : "recorded months";
     var cards = [
       ["Highest income month", ins.highestIncome.mo + " \u2014 " + fmtINR(ins.highestIncome.t.gross)],
       ["Highest expense month", ins.highestExpense.mo + " \u2014 " + fmtINR(ins.highestExpense.t.exp)],
       ["Lowest cash savings month", ins.lowestSavings.mo + " \u2014 " + fmtINR(ins.lowestSavings.t.sav)],
       ["Best savings rate month", ins.bestRate.mo + " \u2014 " + fmtPct(ins.bestRate.t.rate)],
       ["Top expense category", ins.topCategory ? (ins.topCategory.label + " \u2014 " + fmtINR(ins.topCategory.total) + " (" + fmtPct(ins.topCategory.pct) + ")") : "\u2014"],
-      ["Average monthly cash savings", fmtINR(ins.avgSavings)],
-      ["Average monthly income investments", fmtINR(ins.avgInvestments)],
+      ["Average monthly cash savings (" + ins.recordedCount + " " + monthsWord + ")", fmtINR(ins.avgSavings)],
+      ["Average monthly income investments (" + ins.recordedCount + " " + monthsWord + ")", fmtINR(ins.avgInvestments)],
       ["Total wealth allocation", fmtINR(ins.totalWealthAllocation)],
-      ["Months below target savings rate", ins.belowTargetCount + (ins.belowTargetCount === 1 ? " month" : " months")]
+      ["Months below target savings rate (of " + ins.recordedCount + " " + monthsWord + ")", ins.belowTargetCount + (ins.belowTargetCount === 1 ? " month" : " months")]
     ];
     cards.forEach(function(c){
       var card = document.createElement("div");
@@ -1786,6 +1861,7 @@
           base.finance.currentFY = parsed.finance.currentFY || base.finance.currentFY;
           base.finance.targetSavingsRate = (parsed.finance.targetSavingsRate !== undefined) ? parsed.finance.targetSavingsRate : base.finance.targetSavingsRate;
           base.finance.fy = parsed.finance.fy || {};
+          migrateRecordedFlags(base.finance.fy);
         }
         if(parsed.forecast){
           if(parsed.forecast.assumptions) mergeForecastAssumptions(base.forecast.assumptions, parsed.forecast.assumptions);
@@ -1806,6 +1882,14 @@
     state = defaultState();
     scheduleSave(); renderMain();
   });
+
+  function flushSaveNow(){
+    clearTimeout(saveTimer);
+    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){ console.error("flush save failed", e); }
+  }
+  window.addEventListener("beforeunload", flushSaveNow);
+  window.addEventListener("pagehide", flushSaveNow);
+  document.addEventListener("visibilitychange", function(){ if(document.hidden) flushSaveNow(); });
 
   buildTabs();
   renderMain();
