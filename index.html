@@ -2374,6 +2374,8 @@
   /* ---------------- investments & net worth: rendering ---------------- */
 
   var investmentsMode = "holdings";
+  var snapCompareA = null;
+  var snapCompareB = null;
 
   function todayISO(){ return new Date().toISOString().slice(0,10); }
 
@@ -2384,7 +2386,7 @@
 
     var modeToggle = document.createElement("div");
     modeToggle.className = "fin-mode-toggle";
-    [["holdings","Holdings"], ["networth","Net Worth"]].forEach(function(pair){
+    [["holdings","Holdings"], ["networth","Net Worth"], ["snapshots","Net Worth Review"]].forEach(function(pair){
       var btn = document.createElement("button");
       btn.type = "button"; btn.textContent = pair[1];
       if(investmentsMode === pair[0]) btn.classList.add("on");
@@ -2398,6 +2400,7 @@
     view.appendChild(modeToggle);
 
     if(investmentsMode === "networth") buildNetWorthView(view);
+    else if(investmentsMode === "snapshots") buildSnapshotReview(view);
     else buildHoldingsView(view);
   }
 
@@ -2586,14 +2589,14 @@
     view.appendChild(cashSection);
 
     view.appendChild(buildAmountListSection("Property & land", nw.property, "value", "+ add property", function(){
-      nw.property.push({ id:uid(), name:"", value:0 }); scheduleSave(); renderMain();
-    }));
+      nw.property.push({ id:uid(), name:"", value:0, linkedLiabilityId:null }); scheduleSave(); renderMain();
+    }, true));
     view.appendChild(buildAmountListSection("Other assets", nw.otherAssets, "value", "+ add asset", function(){
-      nw.otherAssets.push({ id:uid(), name:"", value:0 }); scheduleSave(); renderMain();
-    }));
+      nw.otherAssets.push({ id:uid(), name:"", value:0, linkedLiabilityId:null }); scheduleSave(); renderMain();
+    }, true));
     view.appendChild(buildAmountListSection("Liabilities (outstanding balance owed)", nw.liabilities, "outstandingBalance", "+ add liability", function(){
       nw.liabilities.push({ id:uid(), name:"", outstandingBalance:0 }); scheduleSave(); renderMain();
-    }));
+    }, false));
 
     var snapSection = document.createElement("div");
     snapSection.className = "fin-section";
@@ -2610,7 +2613,15 @@
     saveBtn.className = "log-btn"; saveBtn.style.alignSelf = "flex-end"; saveBtn.textContent = "Save snapshot";
     saveBtn.addEventListener("click", function(){
       var t = netWorthTotals();
-      state.investments.snapshots.push({ id:uid(), date:dateInp.value || todayISO(), totalAssets:t.totalAssets, totalLiabilities:t.totalLiabilities, netWorth:t.netWorth });
+      state.investments.snapshots.push({
+        id:uid(), date:dateInp.value || todayISO(),
+        totalAssets:t.totalAssets, totalLiabilities:t.totalLiabilities, netWorth:t.netWorth,
+        bankCash: nw.bankCash,
+        holdings: JSON.parse(JSON.stringify(state.investments.holdings)),
+        property: JSON.parse(JSON.stringify(nw.property)),
+        otherAssets: JSON.parse(JSON.stringify(nw.otherAssets)),
+        liabilities: JSON.parse(JSON.stringify(nw.liabilities))
+      });
       scheduleSave();
       renderMain();
     });
@@ -2661,14 +2672,14 @@
     view.appendChild(snapSection);
   }
 
-  function buildAmountListSection(title, list, amountKey, addLabel, onAdd){
+  function buildAmountListSection(title, list, amountKey, addLabel, onAdd, linkable){
     var section = document.createElement("div");
     section.className = "fin-section";
     section.innerHTML = '<h2 class="sec-title">' + title + '</h2>';
     var listWrap = document.createElement("div");
     listWrap.className = "sub-list";
     list.forEach(function(item){
-      listWrap.appendChild(buildAmountRow(item, amountKey));
+      listWrap.appendChild(buildAmountRow(item, amountKey, linkable));
     });
     section.appendChild(listWrap);
     var addBtn = document.createElement("button");
@@ -2680,17 +2691,36 @@
     return section;
   }
 
-  function buildAmountRow(item, amountKey){
+  function buildAmountRow(item, amountKey, linkable){
     var row = document.createElement("div");
     row.className = "sub-row";
     var nameInp = document.createElement("input");
     nameInp.type = "text"; nameInp.className = "s-name"; nameInp.placeholder = "Name";
     nameInp.value = item.name || "";
-    nameInp.addEventListener("input", function(){ item.name = nameInp.value; scheduleSave(); });
+    nameInp.addEventListener("input", function(){ item.name = nameInp.value; scheduleSave(); refreshLiabilityLinkLabels(); });
     var amtInp = document.createElement("input");
     amtInp.type = "number"; amtInp.className = "s-url"; amtInp.placeholder = "Amount";
     amtInp.value = item[amountKey];
     amtInp.addEventListener("input", function(){ item[amountKey] = parseFloat(amtInp.value) || 0; scheduleSave(); refreshNetWorthSummary(); });
+    row.appendChild(nameInp); row.appendChild(amtInp);
+
+    if(linkable){
+      var linkSel = document.createElement("select");
+      linkSel.setAttribute("data-link-select", "1");
+      linkSel.style.fontSize = "11px"; linkSel.style.background = "var(--bg-2)"; linkSel.style.color = "var(--muted)";
+      linkSel.style.border = "1px solid var(--line)"; linkSel.style.borderRadius = "8px"; linkSel.style.padding = "4px 6px";
+      var noneOpt = document.createElement("option"); noneOpt.value = ""; noneOpt.textContent = "No linked loan";
+      linkSel.appendChild(noneOpt);
+      state.investments.netWorth.liabilities.forEach(function(l){
+        var o = document.createElement("option");
+        o.value = l.id; o.textContent = "\u2194 " + (l.name || "Unnamed liability");
+        if(item.linkedLiabilityId === l.id) o.selected = true;
+        linkSel.appendChild(o);
+      });
+      linkSel.addEventListener("change", function(){ item.linkedLiabilityId = linkSel.value || null; scheduleSave(); });
+      row.appendChild(linkSel);
+    }
+
     var rmBtn = document.createElement("button");
     rmBtn.className = "s-remove"; rmBtn.type = "button"; rmBtn.textContent = "\u00d7";
     rmBtn.addEventListener("click", function(){
@@ -2704,6 +2734,17 @@
     });
     row.appendChild(nameInp); row.appendChild(amtInp); row.appendChild(rmBtn);
     return row;
+  }
+
+  function refreshLiabilityLinkLabels(){
+    document.querySelectorAll('select[data-link-select]').forEach(function(sel){
+      [...sel.options].forEach(function(opt){
+        if(opt.value){
+          var liab = state.investments.netWorth.liabilities.find(function(l){ return l.id === opt.value; });
+          if(liab) opt.textContent = "\u2194 " + (liab.name || "Unnamed liability");
+        }
+      });
+    });
   }
 
   function refreshNetWorthSummary(){
@@ -2728,6 +2769,209 @@
       summary.appendChild(card);
     });
     container.appendChild(summary);
+  }
+
+  /* ---------------- monthly net worth review (snapshot comparison) ---------------- */
+
+  function buildSnapshotReview(view){
+    var intro = document.createElement("p");
+    intro.className = "hero-loop";
+    intro.style.marginBottom = "24px";
+    intro.textContent = "Compares two saved snapshots only \u2014 never today's live figures \u2014 so editing a current asset or loan can never change what a past snapshot showed.";
+    view.appendChild(intro);
+
+    var snaps = state.investments.snapshots.slice().sort(function(a,b){ return new Date(a.date) - new Date(b.date); });
+    if(snaps.length < 2){
+      var empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "Save at least two snapshots (in the Net Worth tab) to compare them here.";
+      view.appendChild(empty);
+      return;
+    }
+
+    var header = document.createElement("div");
+    header.className = "fin-header";
+    var controls = document.createElement("div");
+    controls.className = "fin-controls";
+
+    var aCtl = document.createElement("div");
+    aCtl.className = "fin-ctl"; aCtl.innerHTML = "<label>From snapshot</label>";
+    var aSel = document.createElement("select");
+    aSel.className = "fin-select";
+    var bCtl = document.createElement("div");
+    bCtl.className = "fin-ctl"; bCtl.innerHTML = "<label>To snapshot</label>";
+    var bSel = document.createElement("select");
+    bSel.className = "fin-select";
+
+    snaps.forEach(function(s, i){
+      var oa = document.createElement("option"); oa.value = s.id; oa.textContent = s.date;
+      var ob = document.createElement("option"); ob.value = s.id; ob.textContent = s.date;
+      if(i === snaps.length - 2) oa.selected = true;
+      if(i === snaps.length - 1) ob.selected = true;
+      aSel.appendChild(oa); bSel.appendChild(ob);
+    });
+    aSel.addEventListener("change", function(){ snapCompareA = aSel.value; renderMain(); });
+    bSel.addEventListener("change", function(){ snapCompareB = bSel.value; renderMain(); });
+    if(snapCompareA) aSel.value = snapCompareA; else snapCompareA = aSel.value;
+    if(snapCompareB) bSel.value = snapCompareB; else snapCompareB = bSel.value;
+
+    aCtl.appendChild(aSel); bCtl.appendChild(bSel);
+    controls.appendChild(aCtl); controls.appendChild(bCtl);
+    header.appendChild(controls);
+    view.appendChild(header);
+
+    var snapA = snaps.find(function(s){ return s.id === snapCompareA; });
+    var snapB = snaps.find(function(s){ return s.id === snapCompareB; });
+    if(!snapA || !snapB){ snapA = snaps[snaps.length - 2]; snapB = snaps[snaps.length - 1]; }
+
+    if(new Date(snapA.date) > new Date(snapB.date)){ var tmp = snapA; snapA = snapB; snapB = tmp; }
+
+    renderSnapshotComparisonInto(view, snapA, snapB);
+  }
+
+  function itemDelta(label, category, a, b){
+    var hasA = a !== undefined && a !== null;
+    var hasB = b !== undefined && b !== null;
+    return { label:label, category:category, a:hasA ? a : null, b:hasB ? b : null, delta:(hasA && hasB) ? (b - a) : null };
+  }
+
+  function renderSnapshotComparisonInto(view, snapA, snapB){
+    var summary = document.createElement("div");
+    summary.className = "fin-summary";
+    [
+      ["Total Assets", snapA.totalAssets, snapB.totalAssets],
+      ["Total Liabilities", snapA.totalLiabilities, snapB.totalLiabilities],
+      ["Net Worth", snapA.netWorth, snapB.netWorth]
+    ].forEach(function(c){
+      var d = c[2] - c[1];
+      var card = document.createElement("div");
+      card.className = "fin-card";
+      card.innerHTML = '<div class="fc-label">' + c[0] + " (" + snapA.date + " \u2192 " + snapB.date + ')</div>' +
+        '<div class="fc-value">' + fmtINRz(c[2]) + ' <span style="font-size:12px; color:' + (d >= 0 ? FINANCE_ACCENT : FINANCE_NEGATIVE_COLOR) + ';">(' + (d >= 0 ? "+" : "") + fmtINRz(d) + ')</span></div>';
+      summary.appendChild(card);
+    });
+    view.appendChild(summary);
+
+    var hasDetailA = Array.isArray(snapA.holdings);
+    var hasDetailB = Array.isArray(snapB.holdings);
+    if(!hasDetailA || !hasDetailB){
+      var note = document.createElement("p");
+      note.className = "empty";
+      note.style.marginBottom = "16px";
+      note.textContent = "One of these snapshots was saved before item-level detail was tracked \u2014 only the totals above are available for it; the item table below may be incomplete.";
+      view.appendChild(note);
+    }
+
+    var itemsA = hasDetailA ? snapA : { holdings:[], property:[], otherAssets:[], liabilities:[], bankCash:0 };
+    var itemsB = hasDetailB ? snapB : { holdings:[], property:[], otherAssets:[], liabilities:[], bankCash:0 };
+
+    var rows = [];
+    rows.push(itemDelta("Bank Cash", "Cash", itemsA.bankCash, itemsB.bankCash));
+
+    function unionById(listA, listB, category, amountKey){
+      var byId = {};
+      (listA || []).forEach(function(x){ byId[x.id] = byId[x.id] || {}; byId[x.id].a = x; });
+      (listB || []).forEach(function(x){ byId[x.id] = byId[x.id] || {}; byId[x.id].b = x; });
+      Object.keys(byId).forEach(function(id){
+        var pair = byId[id];
+        var label = (pair.b || pair.a).name || "(unnamed)";
+        var av = pair.a ? pair.a[amountKey] : null;
+        var bv = pair.b ? pair.b[amountKey] : null;
+        rows.push(itemDelta(label, category, av, bv));
+      });
+    }
+    unionById(itemsA.holdings, itemsB.holdings, "Investment", "currentValue");
+    unionById(itemsA.property, itemsB.property, "Property", "value");
+    unionById(itemsA.otherAssets, itemsB.otherAssets, "Other Asset", "value");
+    unionById(itemsA.liabilities, itemsB.liabilities, "Liability", "outstandingBalance");
+
+    var tableSection = document.createElement("div");
+    tableSection.className = "fin-section";
+    tableSection.innerHTML = '<h2 class="sec-title">Item-by-item comparison</h2>';
+    var tableWrap = document.createElement("div");
+    tableWrap.className = "fin-table-wrap";
+    var table = document.createElement("table");
+    table.className = "fin-table";
+    table.innerHTML = '<thead><tr><th>Item</th><th>Type</th><th>' + snapA.date + '</th><th>' + snapB.date + '</th><th>Difference</th></tr></thead>';
+    var tbody = document.createElement("tbody");
+    rows.forEach(function(r){
+      var tr = document.createElement("tr");
+      tr.className = "fin-row";
+      var deltaText = r.delta === null ? "\u2014" : ((r.delta >= 0 ? "+" : "") + fmtINRz(r.delta));
+      var deltaColor = r.delta === null ? "inherit" : (r.delta > 0 ? FINANCE_ACCENT : (r.delta < 0 ? FINANCE_NEGATIVE_COLOR : "inherit"));
+      tr.innerHTML =
+        "<td>" + escapeHtml(r.label) + "</td>" +
+        "<td>" + r.category + "</td>" +
+        "<td>" + (r.a === null ? "\u2014" : fmtINRz(r.a)) + "</td>" +
+        "<td>" + (r.b === null ? "\u2014" : fmtINRz(r.b)) + "</td>" +
+        '<td style="color:' + deltaColor + ';">' + deltaText + "</td>";
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    tableSection.appendChild(tableWrap);
+    view.appendChild(tableSection);
+
+    var linkedSection = document.createElement("div");
+    linkedSection.className = "fin-section";
+    linkedSection.innerHTML = '<h2 class="sec-title">Equity on loan-linked assets</h2>';
+    var linkedItems = [];
+    var seenIds = {};
+    (itemsB.property || []).concat(itemsA.property || []).forEach(function(p){
+      if(p.linkedLiabilityId && !seenIds[p.id]){ seenIds[p.id] = true; linkedItems.push({ id:p.id, category:"Property", list:"property" }); }
+    });
+    (itemsB.otherAssets || []).concat(itemsA.otherAssets || []).forEach(function(p){
+      if(p.linkedLiabilityId && !seenIds[p.id]){ seenIds[p.id] = true; linkedItems.push({ id:p.id, category:"Other Asset", list:"otherAssets" }); }
+    });
+
+    if(!linkedItems.length){
+      var noLink = document.createElement("p");
+      noLink.className = "empty";
+      noLink.textContent = "No asset is linked to a loan yet. In the Net Worth tab, use the \u2194 dropdown next to a property or other asset to link it to one of your liabilities.";
+      linkedSection.appendChild(noLink);
+    }else{
+      linkedItems.forEach(function(li){
+        var assetA = (itemsA[li.list] || []).find(function(x){ return x.id === li.id; });
+        var assetB = (itemsB[li.list] || []).find(function(x){ return x.id === li.id; });
+        var name = (assetB || assetA).name || "(unnamed)";
+        var liabIdA = assetA ? assetA.linkedLiabilityId : null;
+        var liabIdB = assetB ? assetB.linkedLiabilityId : null;
+        var liabA = liabIdA ? (itemsA.liabilities || []).find(function(x){ return x.id === liabIdA; }) : null;
+        var liabB = liabIdB ? (itemsB.liabilities || []).find(function(x){ return x.id === liabIdB; }) : null;
+
+        var block = document.createElement("div");
+        block.style.marginBottom = "18px";
+        block.style.paddingBottom = "14px";
+        block.style.borderBottom = "1px solid var(--line)";
+
+        if(!assetA || !assetB || !liabA || !liabB){
+          block.innerHTML = "<strong style='font-family:\"Cormorant Garamond\", serif; font-size:15px;'>" + escapeHtml(name) +
+            "</strong><p class=\"empty\" style=\"margin-top:6px;\">Not present with its linked loan in both snapshots \u2014 equity comparison needs the asset and its linked liability in both.</p>";
+        }else{
+          var av = parseFloat(assetA.value) || 0, bv = parseFloat(assetB.value) || 0;
+          var la = parseFloat(liabA.outstandingBalance) || 0, lb = parseFloat(liabB.outstandingBalance) || 0;
+          var eqA = av - la, eqB = bv - lb;
+          var dAsset = bv - av, dLoan = lb - la, dEquity = eqB - eqA;
+          block.innerHTML =
+            "<strong style='font-family:\"Cormorant Garamond\", serif; font-size:15px;'>" + escapeHtml(name) + " (linked to " + escapeHtml(liabB.name || "loan") + ")</strong>" +
+            '<div style="margin-top:8px; font-size:13px; color:var(--muted); line-height:1.9;">' +
+            "Asset value: " + fmtINRz(av) + " \u2192 " + fmtINRz(bv) + " (" + (dAsset >= 0 ? "+" : "") + fmtINRz(dAsset) + ")<br>" +
+            "Loan balance: " + fmtINRz(la) + " \u2192 " + fmtINRz(lb) + " (" + (dLoan >= 0 ? "+" : "") + fmtINRz(dLoan) + (dLoan < 0 ? ", i.e. debt paid down" : "") + ")<br>" +
+            "Equity: " + fmtINRz(eqA) + " \u2192 " + fmtINRz(eqB) + " (" + (dEquity >= 0 ? "+" : "") + fmtINRz(dEquity) + ")" +
+            '</div><div style="margin-top:8px; font-family:\'JetBrains Mono\', monospace; font-size:11.5px; color:var(--faint);">' +
+            "Equity change = \u0394 asset value \u2212 \u0394 loan balance = " + fmtINRz(dAsset) + " \u2212 (" + fmtINRz(dLoan) + ") = " + fmtINRz(dEquity) +
+            "</div>";
+        }
+        linkedSection.appendChild(block);
+      });
+    }
+    view.appendChild(linkedSection);
+
+    var caveat = document.createElement("p");
+    caveat.className = "empty";
+    caveat.style.marginTop = "6px";
+    caveat.textContent = "This isn't automatically labeled \"investment returns.\" The item table above shows each contributor separately \u2014 bank cash flow, debt repayment, and value changes on each holding or asset can all move net worth, often at the same time.";
+    view.appendChild(caveat);
   }
 
   function buildDomain(view, key){
