@@ -384,6 +384,7 @@
     INCOME_FIELDS.concat(DEDUCTION_FIELDS).concat(INVESTMENT_FIELDS).concat(EXPENSE_FIELDS).forEach(function(f){ o[f[0]] = 0; });
     o.notes = "";
     o.recorded = false;
+    o.actualClosingBalance = null;
     return o;
   }
   function ensureFYData(fy){
@@ -618,6 +619,81 @@
       balance = closing;
     });
     return timeline;
+  }
+
+  /* ---------------- actual vs forecast ---------------- */
+
+  var CALENDAR_MONTH_NUM = { Apr:4, May:5, Jun:6, Jul:7, Aug:8, Sep:9, Oct:10, Nov:11, Dec:12, Jan:1, Feb:2, Mar:3 };
+
+  function actualMonthToCalendar(fy, moName){
+    var startYear = parseInt(fy.split("-")[0], 10);
+    var num = CALENDAR_MONTH_NUM[moName];
+    var year = (num >= 4) ? startYear : startYear + 1;
+    return { year:year, month:num };
+  }
+
+  function collectRecordedComparisonRows(){
+    var rows = []; var outOfRange = [];
+    Object.keys(state.finance.fy).forEach(function(fy){
+      var months = state.finance.fy[fy].months;
+      MONTHS.forEach(function(mo){
+        var m = months[mo];
+        if(!m || !m.recorded) return;
+        var cal = actualMonthToCalendar(fy, mo);
+        if(ymCompare(cal.year, cal.month, FORECAST_START.y, FORECAST_START.m) < 0 ||
+           ymCompare(cal.year, cal.month, FORECAST_END.y, FORECAST_END.m) > 0){
+          outOfRange.push({ fy:fy, mo:mo, year:cal.year, month:cal.month });
+          return;
+        }
+        var actualT = monthTotals(m);
+        var forecastT = computeForecastMonth(cal.year, cal.month, state.forecast.assumptions);
+        rows.push({ fy:fy, mo:mo, year:cal.year, month:cal.month, monthObj:m, actual:actualT, forecast:forecastT });
+      });
+    });
+    rows.sort(function(a,b){ return ymCompare(a.year,a.month,b.year,b.month); });
+    outOfRange.sort(function(a,b){ return ymCompare(a.year,a.month,b.year,b.month); });
+    return { rows:rows, outOfRange:outOfRange };
+  }
+
+  function findLatestActualClosingBalance(){
+    var best = null;
+    Object.keys(state.finance.fy).forEach(function(fy){
+      var months = state.finance.fy[fy].months;
+      MONTHS.forEach(function(mo){
+        var m = months[mo];
+        if(!m || m.actualClosingBalance === null || m.actualClosingBalance === undefined) return;
+        var cal = actualMonthToCalendar(fy, mo);
+        if(!best || ymCompare(cal.year, cal.month, best.year, best.month) > 0){
+          best = { year:cal.year, month:cal.month, balance:m.actualClosingBalance, fy:fy, mo:mo };
+        }
+      });
+    });
+    return best;
+  }
+
+  function computeUpdatedProjectionTimeline(a){
+    var latest = findLatestActualClosingBalance();
+    if(!latest) return null;
+    var startY = latest.year, startM = latest.month + 1;
+    if(startM > 12){ startM = 1; startY++; }
+    if(ymCompare(startY, startM, FORECAST_END.y, FORECAST_END.m) > 0){
+      return { anchor:latest, timeline:[] };
+    }
+    var start = clampToGlobal(startY, startM);
+    var months = generateForecastMonths({ start:start, end:FORECAST_END }, a);
+    var balance = latest.balance;
+    var timeline = [];
+    months.forEach(function(mo){
+      var opening = balance;
+      var surplus = mo.cashRemaining;
+      var closing = opening + surplus;
+      timeline.push({
+        year:mo.year, month:mo.month, opening:opening, income:mo.netCashIncome,
+        expenses:mo.recurringExpenses, bills:mo.scheduledBills, surplus:surplus, closing:closing
+      });
+      balance = closing;
+    });
+    return { anchor:latest, timeline:timeline };
   }
 
   function defaultState(){
@@ -937,7 +1013,7 @@
 
     var modeToggle = document.createElement("div");
     modeToggle.className = "fin-mode-toggle";
-    [["actual","Actual"], ["forecast","Budget & Cash-Flow Forecast"]].forEach(function(pair){
+    [["actual","Actual"], ["forecast","Budget & Cash-Flow Forecast"], ["compare","Actual vs Forecast"]].forEach(function(pair){
       var btn = document.createElement("button");
       btn.type = "button"; btn.textContent = pair[1];
       if(financeMode === pair[0]) btn.classList.add("on");
@@ -951,7 +1027,196 @@
     view.appendChild(modeToggle);
 
     if(financeMode === "forecast") buildFinanceForecast(view);
+    else if(financeMode === "compare") buildFinanceCompare(view);
     else buildFinanceActual(view);
+  }
+
+  /* ---------------- actual vs forecast: rendering ---------------- */
+
+  function buildFinanceCompare(view){
+    var intro = document.createElement("p");
+    intro.className = "hero-loop";
+    intro.style.marginBottom = "24px";
+    intro.textContent = "How your recorded Actual months compare to what the Forecast assumed \u2014 plus a projection rebased on your real bank balance, once you enter one.";
+    view.appendChild(intro);
+
+    var data = collectRecordedComparisonRows();
+
+    if(data.outOfRange.length){
+      var oorNote = document.createElement("p");
+      oorNote.className = "empty";
+      oorNote.style.marginBottom = "20px";
+      var oorLabels = data.outOfRange.map(function(o){ return ymLabel(o.year, o.month); }).join(", ");
+      oorNote.textContent = data.outOfRange.length + " recorded month" + (data.outOfRange.length === 1 ? "" : "s") + " (" + oorLabels + ") " +
+        (data.outOfRange.length === 1 ? "falls" : "fall") + " outside the forecast window (" + ymLabel(FORECAST_START.y, FORECAST_START.m) + " \u2013 " + ymLabel(FORECAST_END.y, FORECAST_END.m) + ") and " +
+        (data.outOfRange.length === 1 ? "isn't" : "aren't") + " shown below.";
+      view.appendChild(oorNote);
+    }
+
+    var tableSection = document.createElement("div");
+    tableSection.className = "fin-section";
+    tableSection.innerHTML = '<h2 class="sec-title">Monthly comparison</h2>';
+
+    if(!data.rows.length){
+      var empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No recorded Actual months fall within the forecast window yet.";
+      tableSection.appendChild(empty);
+    }else{
+      var tableWrap = document.createElement("div");
+      tableWrap.className = "fin-table-wrap";
+      var table = document.createElement("table");
+      table.className = "fin-table";
+      table.innerHTML =
+        '<thead><tr><th>Month</th><th>Net Income (Forecast)</th><th>Net Income (Actual)</th><th>\u0394 Income</th>' +
+        '<th>Expenses (Forecast)</th><th>Expenses (Actual)</th><th>\u0394 Expenses</th>' +
+        '<th>Surplus (Forecast)</th><th>Surplus (Actual)</th><th>\u0394 Surplus</th>' +
+        '<th>Actual Closing Balance</th></tr></thead>';
+      var tbody = document.createElement("tbody");
+
+      data.rows.forEach(function(r){
+        var fIncome = r.forecast.netCashIncome, aIncome = r.actual.net;
+        var fExp = r.forecast.totalOutflow, aExp = r.actual.exp;
+        var fSurplus = r.forecast.cashRemaining, aSurplus = r.actual.sav;
+        var dIncome = aIncome - fIncome, dExp = aExp - fExp, dSurplus = aSurplus - fSurplus;
+
+        function diffCell(d){
+          var color = d > 0 ? FINANCE_ACCENT : (d < 0 ? FINANCE_NEGATIVE_COLOR : "inherit");
+          var sign = d > 0 ? "+" : "";
+          return '<td style="color:' + color + '; font-weight:600;">' + sign + fmtINRz(d) + "</td>";
+        }
+
+        var row = document.createElement("tr");
+        row.className = "fin-row";
+        row.innerHTML =
+          "<td>" + ymLabel(r.year, r.month) + "</td>" +
+          "<td>" + fmtINRz(fIncome) + "</td>" + "<td>" + fmtINRz(aIncome) + "</td>" + diffCell(dIncome) +
+          "<td>" + fmtINRz(fExp) + "</td>" + "<td>" + fmtINRz(aExp) + "</td>" + diffCell(dExp) +
+          "<td>" + fmtINRz(fSurplus) + "</td>" + "<td>" + fmtINRz(aSurplus) + "</td>" + diffCell(dSurplus) +
+          "<td></td>";
+
+        var balCell = row.lastElementChild;
+        var balInput = document.createElement("input");
+        balInput.type = "number";
+        balInput.placeholder = "Not entered";
+        balInput.style.width = "130px";
+        balInput.style.background = "transparent";
+        balInput.style.border = "none";
+        balInput.style.borderBottom = "1px solid var(--line)";
+        balInput.style.color = "var(--ink)";
+        balInput.style.fontFamily = "'JetBrains Mono', monospace";
+        balInput.style.fontSize = "12.5px";
+        balInput.style.padding = "3px 2px";
+        if(r.monthObj.actualClosingBalance !== null && r.monthObj.actualClosingBalance !== undefined){
+          balInput.value = r.monthObj.actualClosingBalance;
+        }
+        balInput.addEventListener("input", function(){
+          r.monthObj.actualClosingBalance = (balInput.value === "") ? null : (parseFloat(balInput.value) || 0);
+          scheduleSave();
+          refreshUpdatedProjection();
+        });
+        balCell.appendChild(balInput);
+
+        tbody.appendChild(row);
+      });
+      table.appendChild(tbody);
+      tableWrap.appendChild(table);
+      tableSection.appendChild(tableWrap);
+
+      var legend = document.createElement("p");
+      legend.className = "empty";
+      legend.style.marginTop = "12px";
+      legend.textContent = "\u0394 = Actual \u2212 Forecast. For income and surplus, positive (green) means you did better than planned. For expenses, positive (green) means you spent more than planned \u2014 read that column in context, not as automatically good.";
+      tableSection.appendChild(legend);
+    }
+    view.appendChild(tableSection);
+
+    var projSection = document.createElement("div");
+    projSection.className = "fin-section";
+    projSection.innerHTML = '<h2 class="sec-title">Updated future projection</h2>';
+    var projNote = document.createElement("p");
+    projNote.className = "empty";
+    projNote.style.marginBottom = "16px";
+    projNote.textContent = "This does not change your original Cash Reserve & Monthly Plan above \u2014 that keeps using its own opening balance. This is a separate, rebased view starting from your most recent actual closing balance.";
+    projSection.appendChild(projNote);
+    var projResults = document.createElement("div");
+    projResults.id = "updatedProjectionResults";
+    projSection.appendChild(projResults);
+    view.appendChild(projSection);
+    renderUpdatedProjectionInto(projResults);
+  }
+
+  function refreshUpdatedProjection(){
+    var container = document.getElementById("updatedProjectionResults");
+    if(container) renderUpdatedProjectionInto(container);
+  }
+
+  function renderUpdatedProjectionInto(container){
+    container.innerHTML = "";
+    var a = state.forecast.assumptions;
+    var result = computeUpdatedProjectionTimeline(a);
+    if(!result){
+      var msg = document.createElement("p");
+      msg.className = "empty";
+      msg.textContent = "Enter an actual closing balance above for any recorded month to see a projection rebased from that real figure.";
+      container.appendChild(msg);
+      return;
+    }
+    var anchorNote = document.createElement("p");
+    anchorNote.className = "empty";
+    anchorNote.style.marginBottom = "16px";
+    anchorNote.textContent = "Rebased from your actual closing balance of " + fmtINR(result.anchor.balance) + " at the end of " + ymLabel(result.anchor.year, result.anchor.month) + ".";
+    container.appendChild(anchorNote);
+
+    if(!result.timeline.length){
+      var doneMsg = document.createElement("p");
+      doneMsg.className = "empty";
+      doneMsg.textContent = "That's the last month in the forecast window \u2014 nothing further to project.";
+      container.appendChild(doneMsg);
+      return;
+    }
+
+    var lowest = result.timeline.reduce(function(a,b){ return b.closing < a.closing ? b : a; });
+    var negCount = result.timeline.filter(function(t){ return t.closing < 0; }).length;
+    var summary = document.createElement("div");
+    summary.className = "fin-summary";
+    [
+      ["Projected closing (end of window)", fmtINR(result.timeline[result.timeline.length - 1].closing)],
+      ["Lowest projected balance", fmtINR(lowest.closing) + " (" + ymLabel(lowest.year, lowest.month) + ")"],
+      ["Months projected negative", negCount + " of " + result.timeline.length]
+    ].forEach(function(c){
+      var card = document.createElement("div");
+      card.className = "fin-card";
+      card.innerHTML = '<div class="fc-label">' + c[0] + '</div><div class="fc-value">' + c[1] + '</div>';
+      summary.appendChild(card);
+    });
+    container.appendChild(summary);
+
+    var tableWrap = document.createElement("div");
+    tableWrap.className = "fin-table-wrap";
+    var table = document.createElement("table");
+    table.className = "fin-table";
+    table.innerHTML =
+      '<thead><tr><th>Month</th><th>Opening Balance</th><th>Net Cash Income</th><th>Recurring Exp.</th>' +
+      '<th>Scheduled Bills</th><th>Surplus / Shortfall</th><th>Closing Balance</th></tr></thead>';
+    var tbody = document.createElement("tbody");
+    result.timeline.forEach(function(t){
+      var row = document.createElement("tr");
+      row.className = "fin-row";
+      if(t.closing < 0) row.style.background = "rgba(228,120,143,0.14)";
+      row.innerHTML =
+        "<td>" + ymLabel(t.year, t.month) + "</td>" +
+        "<td>" + fmtINRz(t.opening) + "</td>" +
+        "<td>" + fmtINRz(t.income) + "</td>" +
+        "<td>" + fmtINRz(t.expenses) + "</td>" +
+        "<td>" + fmtINRz(t.bills) + "</td>" +
+        "<td>" + fmtINRz(t.surplus) + "</td>" +
+        '<td style="color:' + (t.closing < 0 ? FINANCE_NEGATIVE_COLOR : "inherit") + '; font-weight:' + (t.closing < 0 ? "700" : "400") + ';">' + fmtINRz(t.closing) + "</td>";
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    container.appendChild(tableWrap);
   }
 
   function buildFinanceActual(view){
