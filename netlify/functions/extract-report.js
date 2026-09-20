@@ -121,6 +121,7 @@ exports.handler = async (event, context) => {
       });
     } catch (e) {
       console.error("extraction call failed:", e && e.message);
+      console.error("diagnostic -- has ANTHROPIC_API_KEY:", Boolean(process.env.ANTHROPIC_API_KEY), "has ANTHROPIC_BASE_URL:", Boolean(process.env.ANTHROPIC_BASE_URL), "has NETLIFY_AI_GATEWAY_KEY:", Boolean(process.env.NETLIFY_AI_GATEWAY_KEY), "has NETLIFY_AI_GATEWAY_BASE_URL:", Boolean(process.env.NETLIFY_AI_GATEWAY_BASE_URL));
       return { statusCode: 502, body: JSON.stringify({ error: "Could not reach the extraction service. Try again." }) };
     }
 
