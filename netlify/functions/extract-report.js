@@ -23,8 +23,22 @@ const EXTRACTION_PROMPT =
 
 function parseExtractionResponse(text) {
   var raw = String(text).trim();
-  raw = raw.replace(/^```(json)?/i, "").replace(/```$/, "").trim();
-  var parsed = JSON.parse(raw);
+  // Try as-is first.
+  try { return validateTests(JSON.parse(raw)); } catch (e) {}
+  // Strip a ```json ... ``` or ``` ... ``` fence, anywhere it appears.
+  var fenced = raw.replace(/^[\s\S]*?```(?:json)?\s*/i, "").replace(/```[\s\S]*$/, "").trim();
+  try { return validateTests(JSON.parse(fenced)); } catch (e) {}
+  // Last resort: the model may have added a sentence of preamble or trailing
+  // commentary despite instructions -- pull out the outermost {...} and try that.
+  var first = raw.indexOf("{");
+  var last = raw.lastIndexOf("}");
+  if (first !== -1 && last !== -1 && last > first) {
+    try { return validateTests(JSON.parse(raw.slice(first, last + 1))); } catch (e) {}
+  }
+  throw new Error("Could not parse extraction response");
+}
+
+function validateTests(parsed) {
   if (!parsed || !Array.isArray(parsed.tests)) {
     throw new Error("Unexpected shape");
   }
@@ -138,6 +152,7 @@ exports.handler = async (event, context) => {
     try {
       tests = parseExtractionResponse(textBlock.text);
     } catch (e) {
+      console.error("could not parse extraction response. First 500 chars of what the model returned:", String(textBlock.text).slice(0, 500));
       return { statusCode: 502, body: JSON.stringify({ error: "Could not understand the extraction result. Try again." }) };
     }
 
