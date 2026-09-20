@@ -1,18 +1,13 @@
-// Phase 2: extracts test results from a report using Claude, via Netlify's
-// AI Gateway (no separate API key to manage -- Netlify injects credentials
-// automatically for the Anthropic SDK in this runtime). Nothing here is ever
-// called automatically: every extraction happens because the signed-in user
-// clicked "Extract results" on one specific report. Extracted results are
-// only a *preview* until the user reviews and confirms them (the "save"
-// action below) -- nothing is trusted or persisted before that.
+// Phase 2: extracts test results from a report using Claude. The actual
+// model call is delegated to claude-extract.mjs (a modern-format function --
+// see that file for why) over an internal, secret-gated request; this file
+// keeps all identity/auth and per-user ownership checking, unchanged.
 //
 // Ownership: every operation first looks the report id up in the user's own
 // index (never a global list), exactly like medical-reports.js. A report
 // that isn't in *this* signed-in user's index is treated as not found.
 
 const { getStore, connectLambda } = require("@netlify/blobs");
-const AnthropicPkg = require("@anthropic-ai/sdk");
-const Anthropic = AnthropicPkg.default || AnthropicPkg;
 
 const MODEL = "claude-sonnet-5";
 
@@ -113,15 +108,20 @@ exports.handler = async (event, context) => {
 
     let message;
     try {
-      const anthropic = new Anthropic();
-      message = await anthropic.messages.create({
-        model: MODEL,
-        max_tokens: 4096,
-        messages: [{ role: "user", content: [contentBlock, { type: "text", text: EXTRACTION_PROMPT }] }]
+      const bridgeUrl = (process.env.URL || "") + "/.netlify/functions/claude-extract";
+      const bridgeRes = await fetch(bridgeUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_BRIDGE_SECRET || "" },
+        body: JSON.stringify({ base64: base64, mimeType: record.mimeType, prompt: EXTRACTION_PROMPT })
       });
+      const bridgeBody = await bridgeRes.json();
+      if (!bridgeRes.ok || bridgeBody.error) {
+        console.error("extraction bridge call failed:", bridgeRes.status, bridgeBody && bridgeBody.error);
+        return { statusCode: 502, body: JSON.stringify({ error: "Could not reach the extraction service. Try again." }) };
+      }
+      message = { content: bridgeBody.content };
     } catch (e) {
       console.error("extraction call failed:", e && e.message);
-      console.error("diagnostic -- has ANTHROPIC_API_KEY:", Boolean(process.env.ANTHROPIC_API_KEY), "has ANTHROPIC_BASE_URL:", Boolean(process.env.ANTHROPIC_BASE_URL), "has NETLIFY_AI_GATEWAY_KEY:", Boolean(process.env.NETLIFY_AI_GATEWAY_KEY), "has NETLIFY_AI_GATEWAY_BASE_URL:", Boolean(process.env.NETLIFY_AI_GATEWAY_BASE_URL));
       return { statusCode: 502, body: JSON.stringify({ error: "Could not reach the extraction service. Try again." }) };
     }
 
