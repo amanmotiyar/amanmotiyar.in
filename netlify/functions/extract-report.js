@@ -1,12 +1,15 @@
 // Phase 2: extracts test results from a report using Claude. The actual
-// model call is delegated to claude-extract.mjs (a modern-format function --
-// see that file for why) over an internal, secret-gated request; this file
-// keeps all identity/auth and per-user ownership checking, unchanged.
+// model call runs in claude-extract.mjs, as a BACKGROUND function (a full
+// extraction on a dense report measured at 44-48 seconds, too long for a
+// normal synchronous function to wait on) -- this file starts that job and
+// lets the client poll for its result, and keeps all identity/auth and
+// per-user ownership checking, unchanged.
 //
-// Ownership: every operation first looks the report id up in the user's own
-// index (never a global list), exactly like medical-reports.js. A report
-// that isn't in *this* signed-in user's index is treated as not found.
+// Ownership: every operation first looks the report id (or job's stored
+// userId) up in the user's own index / job record. A report or job that
+// doesn't belong to *this* signed-in user is treated as not found.
 
+const crypto = require("crypto");
 const { getStore, connectLambda } = require("@netlify/blobs");
 
 const MODEL = "claude-sonnet-5";
@@ -21,30 +24,6 @@ const EXTRACTION_PROMPT =
   "Respond with ONLY a JSON object in this exact shape, and nothing else -- no markdown fences, no commentary, no extra keys:\n" +
   "{\"tests\":[{\"section\":string|null,\"name\":string,\"value\":string|null,\"unit\":string|null,\"referenceRange\":string|null,\"labFlag\":string|null}]}";
 
-function parseExtractionResponse(text) {
-  var raw = String(text).trim();
-  // Try as-is first.
-  try { return validateTests(JSON.parse(raw)); } catch (e) {}
-  // Strip a ```json ... ``` or ``` ... ``` fence, anywhere it appears.
-  var fenced = raw.replace(/^[\s\S]*?```(?:json)?\s*/i, "").replace(/```[\s\S]*$/, "").trim();
-  try { return validateTests(JSON.parse(fenced)); } catch (e) {}
-  // Last resort: the model may have added a sentence of preamble or trailing
-  // commentary despite instructions -- pull out the outermost {...} and try that.
-  var first = raw.indexOf("{");
-  var last = raw.lastIndexOf("}");
-  if (first !== -1 && last !== -1 && last > first) {
-    try { return validateTests(JSON.parse(raw.slice(first, last + 1))); } catch (e) {}
-  }
-  throw new Error("Could not parse extraction response");
-}
-
-function validateTests(parsed) {
-  if (!parsed || !Array.isArray(parsed.tests)) {
-    throw new Error("Unexpected shape");
-  }
-  return parsed.tests;
-}
-
 exports.handler = async (event, context) => {
   connectLambda(event);
 
@@ -57,6 +36,7 @@ exports.handler = async (event, context) => {
   const indexStore = getStore({ name: "medical-reports-index" });
   const fileStore = getStore({ name: "medical-reports" });
   const resultsStore = getStore({ name: "medical-reports-results" });
+  const jobsStore = getStore({ name: "medical-reports-extraction-jobs" });
 
   async function ownedRecord(id) {
     var list = (await indexStore.get(userId, { type: "json" })) || [];
@@ -64,20 +44,34 @@ exports.handler = async (event, context) => {
   }
 
   if (event.httpMethod === "GET") {
-    var id = event.queryStringParameters && event.queryStringParameters.id;
-    if (!id) {
-      return { statusCode: 400, body: JSON.stringify({ error: "Missing id" }) };
+    var params = event.queryStringParameters || {};
+
+    if (params.jobId) {
+      var job = await jobsStore.get(params.jobId, { type: "json" });
+      if (!job || job.userId !== userId) {
+        return { statusCode: 404, body: JSON.stringify({ error: "Not found" }) };
+      }
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: job.status, tests: job.tests || null, error: job.error || null })
+      };
     }
-    var record = await ownedRecord(id);
-    if (!record) {
-      return { statusCode: 404, body: JSON.stringify({ error: "Not found" }) };
+
+    if (params.id) {
+      var record = await ownedRecord(params.id);
+      if (!record) {
+        return { statusCode: 404, body: JSON.stringify({ error: "Not found" }) };
+      }
+      var results = await resultsStore.get(params.id, { type: "json" });
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ results: results || null })
+      };
     }
-    var results = await resultsStore.get(id, { type: "json" });
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ results: results || null })
-    };
+
+    return { statusCode: 400, body: JSON.stringify({ error: "Missing id or jobId" }) };
   }
 
   if (event.httpMethod === "POST") {
@@ -108,58 +102,37 @@ exports.handler = async (event, context) => {
       };
     }
 
-    // Default action: run extraction and return a PREVIEW. Nothing is saved
-    // here -- the client shows this to the user for review, and only a
-    // subsequent "save" call (above) persists anything.
+    // Default action: START an extraction job and return immediately.
+    // The client polls GET ?jobId=... for the result -- see above.
     const bytes = await fileStore.get(record.blobKey, { type: "arrayBuffer" });
     if (!bytes) {
       return { statusCode: 404, body: JSON.stringify({ error: "File missing from storage" }) };
     }
     const base64 = Buffer.from(bytes).toString("base64");
-    const contentBlock = record.mimeType === "application/pdf"
-      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
-      : { type: "image", source: { type: "base64", media_type: record.mimeType, data: base64 } };
+    const jobId = crypto.randomUUID();
 
-    let message;
+    await jobsStore.setJSON(jobId, { status: "pending", userId: userId, reportId: body.id, startedAt: new Date().toISOString() });
+
     try {
       // process.env.URL (Netlify's usual auto-injected site URL) isn't reliably
-      // present in this project's classic functions either -- same pattern as
-      // everything else tonight -- so this is hardcoded to the site's real,
-      // known address instead of depending on it.
+      // present in this project's classic functions -- same pattern seen
+      // elsewhere tonight -- so this is hardcoded to the site's real, known
+      // address instead of depending on it.
       const bridgeUrl = "https://amanmotiyar.in/.netlify/functions/claude-extract";
-      const bridgeRes = await fetch(bridgeUrl, {
+      await fetch(bridgeUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_BRIDGE_SECRET || "" },
-        body: JSON.stringify({ base64: base64, mimeType: record.mimeType, prompt: EXTRACTION_PROMPT })
+        body: JSON.stringify({ jobId: jobId, userId: userId, base64: base64, mimeType: record.mimeType, prompt: EXTRACTION_PROMPT })
       });
-      const bridgeBody = await bridgeRes.json();
-      if (!bridgeRes.ok || bridgeBody.error) {
-        console.error("extraction bridge call failed:", bridgeRes.status, bridgeBody && bridgeBody.error);
-        return { statusCode: 502, body: JSON.stringify({ error: "Could not reach the extraction service. Try again." }) };
-      }
-      message = { content: bridgeBody.content };
     } catch (e) {
-      console.error("extraction call failed:", e && e.message);
-      return { statusCode: 502, body: JSON.stringify({ error: "Could not reach the extraction service. Try again." }) };
-    }
-
-    const textBlock = (message.content || []).find(function (b) { return b.type === "text"; });
-    if (!textBlock) {
-      return { statusCode: 502, body: JSON.stringify({ error: "No extraction result returned" }) };
-    }
-
-    let tests;
-    try {
-      tests = parseExtractionResponse(textBlock.text);
-    } catch (e) {
-      console.error("could not parse extraction response. First 500 chars of what the model returned:", String(textBlock.text).slice(0, 500));
-      return { statusCode: 502, body: JSON.stringify({ error: "Could not understand the extraction result. Try again." }) };
+      console.error("could not start extraction job:", e && e.message);
+      await jobsStore.setJSON(jobId, { status: "error", error: "Could not start extraction. Try again.", userId: userId, reportId: body.id });
     }
 
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tests: tests, model: MODEL })
+      body: JSON.stringify({ jobId: jobId, status: "pending" })
     };
   }
 
