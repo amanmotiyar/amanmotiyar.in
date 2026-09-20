@@ -4,7 +4,7 @@
 // populates automatically from the "Authorization: Bearer <jwt>" header
 // sent by the client -- there is no separate password/secret to manage here.
 
-const { getDatabase } = require("@netlify/database");
+const { getDatabase, getConnectionString } = require("@netlify/database");
 
 exports.handler = async (event, context) => {
   const user = context.clientContext && context.clientContext.user;
@@ -12,7 +12,10 @@ exports.handler = async (event, context) => {
     return { statusCode: 401, body: JSON.stringify({ error: "Not authenticated" }) };
   }
   const userId = user.sub;
-  const db = getDatabase();
+  // Classic exports.handler functions run in "Lambda compatibility mode" --
+  // the one place Netlify Database can't auto-detect its connection, so it
+  // has to be passed in explicitly here.
+  const db = getDatabase({ connectionString: getConnectionString() });
 
   if (event.httpMethod === "GET") {
     const rows = await db.sql`SELECT data, updated_at, force_logout_at FROM user_data WHERE user_id = ${userId}`;
