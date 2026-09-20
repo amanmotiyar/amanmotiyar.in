@@ -16,7 +16,9 @@ import Anthropic from "@anthropic-ai/sdk";
 
 export default async (req) => {
   const secret = req.headers.get("x-internal-secret");
-  if (!secret || secret !== process.env.INTERNAL_BRIDGE_SECRET) {
+  const expected = process.env.INTERNAL_BRIDGE_SECRET;
+  if (!secret || !expected || secret !== expected) {
+    console.error("claude-extract: secret mismatch -- has env var:", Boolean(expected), "env var length:", expected ? expected.length : 0, "received header:", Boolean(secret), "header length:", secret ? secret.length : 0);
     return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: { "Content-Type": "application/json" } });
   }
 
