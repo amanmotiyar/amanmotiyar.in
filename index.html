@@ -3498,6 +3498,8 @@
   var SYNC_ENDPOINT = "/.netlify/functions/sync-data";
   var syncEnabled = false;
   var lastSyncedJSON = null;
+  var lastKnownAuthId = null;
+  var lastKnownServerUpdatedAt = null;
   var syncInFlight = false;
 
   function setSyncStatus(text){
@@ -3519,6 +3521,24 @@
     }
   }
 
+  function doPush(token, json){
+    return fetch(SYNC_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+      body: JSON.stringify({ data: state })
+    }).then(function(res){
+      return res.json().catch(function(){ return {}; }).then(function(body){ return { res:res, body:body }; });
+    }).then(function(r){
+      if(r.res && r.res.ok){
+        lastSyncedJSON = json;
+        if(r.body && r.body.updatedAt) lastKnownServerUpdatedAt = r.body.updatedAt;
+        setSyncStatus("Synced");
+      }else{
+        setSyncStatus("Sync failed \u2014 will retry");
+      }
+    });
+  }
+
   function pushToServer(){
     if(!syncEnabled || !window.netlifyIdentity) return;
     var user = window.netlifyIdentity.currentUser();
@@ -3527,16 +3547,26 @@
     if(json === lastSyncedJSON || syncInFlight) return;
     syncInFlight = true;
     setSyncStatus("Syncing\u2026");
-    user.jwt().then(function(token){
-      return fetch(SYNC_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
-        body: JSON.stringify({ data: state })
-      });
-    }).then(function(res){
+    var token;
+    user.jwt().then(function(t){
+      token = t;
+      // Check first: has this account's cloud data changed since this device last
+      // synced it? If so, don't silently clobber whatever changed elsewhere.
+      return fetch(SYNC_ENDPOINT, { headers: { "Authorization": "Bearer " + token } });
+    }).then(function(res){ return res.json(); }).then(function(check){
+      var remoteUpdatedAt = check && check.updatedAt;
+      if(remoteUpdatedAt && lastKnownServerUpdatedAt && remoteUpdatedAt !== lastKnownServerUpdatedAt){
+        var keepThisDevice = confirm(
+          "Your data changed on another device since this device last synced.\n\n" +
+          "Press OK to keep THIS device's version (the other device's newer changes will be overwritten).\n" +
+          "Press Cancel to load the newer version instead (unsynced changes on this device will be discarded)."
+        );
+        if(keepThisDevice) return doPush(token, json);
+        return pullFromServer(false);
+      }
+      return doPush(token, json);
+    }).then(function(){
       syncInFlight = false;
-      if(res && res.ok){ lastSyncedJSON = json; setSyncStatus("Synced"); }
-      else{ setSyncStatus("Sync failed \u2014 will retry"); }
     }).catch(function(e){
       syncInFlight = false;
       console.error("sync push failed", e);
@@ -3545,11 +3575,11 @@
   }
 
   function pullFromServer(promptFirst){
-    if(!window.netlifyIdentity) return;
+    if(!window.netlifyIdentity) return Promise.resolve();
     var user = window.netlifyIdentity.currentUser();
-    if(!user) return;
+    if(!user) return Promise.resolve();
     setSyncStatus("Checking cloud data\u2026");
-    user.jwt().then(function(token){
+    return user.jwt().then(function(token){
       return fetch(SYNC_ENDPOINT, { headers: { "Authorization": "Bearer " + token } });
     }).then(function(res){ return res.json(); }).then(function(result){
       if(!result || !result.data){ setSyncStatus("Synced"); return; }
@@ -3560,6 +3590,7 @@
       if(proceed){
         state = hydrateState(result.data);
         lastSyncedJSON = JSON.stringify(state);
+        if(result.updatedAt) lastKnownServerUpdatedAt = result.updatedAt;
         try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
         renderMain();
       }
@@ -3572,18 +3603,35 @@
 
   if(window.netlifyIdentity){
     window.netlifyIdentity.on("init", function(user){
+      lastKnownAuthId = user ? user.id : null;
       updateAuthUI(user);
       if(user) pullFromServer(true);
     });
     window.netlifyIdentity.on("login", function(user){
+      lastKnownAuthId = user ? user.id : null;
       updateAuthUI(user);
       window.netlifyIdentity.close();
       pullFromServer(true);
     });
     window.netlifyIdentity.on("logout", function(){
+      lastKnownAuthId = null;
       updateAuthUI(null);
     });
     window.netlifyIdentity.init();
+
+    // If you log in (or out) in one tab -- e.g. clicking the email confirmation
+    // link, which opens a new tab -- this notices the change in any other open
+    // tab and updates it automatically, instead of leaving it stuck showing
+    // "Not signed in" until manually refreshed.
+    window.addEventListener("storage", function(){
+      var user = window.netlifyIdentity.currentUser();
+      var currentId = user ? user.id : null;
+      if(currentId !== lastKnownAuthId){
+        lastKnownAuthId = currentId;
+        updateAuthUI(user);
+        if(user) pullFromServer(true);
+      }
+    });
   }
 
   document.getElementById("authBtn").addEventListener("click", function(){
