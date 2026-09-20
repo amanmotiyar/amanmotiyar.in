@@ -13,6 +13,10 @@
 // function) does all of that before ever calling this one, and this file is
 // gated by a shared secret header so nothing else can trigger it and spend
 // this account's AI Gateway credits.
+//
+// Receives only a reference to the file (its Blobs key) and fetches the
+// actual bytes itself -- sending the full base64-encoded file through the
+// internal trigger call hit a 413 Payload Too Large.
 
 import Anthropic from "@anthropic-ai/sdk";
 import { getStore } from "@netlify/blobs";
@@ -50,15 +54,22 @@ export default async (req) => {
   } catch (e) {
     return;
   }
-  if (!body || !body.jobId || !body.base64 || !body.mimeType || !body.prompt) {
+  if (!body || !body.jobId || !body.blobKey || !body.mimeType || !body.prompt) {
     return;
   }
 
-  const contentBlock = body.mimeType === "application/pdf"
-    ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: body.base64 } }
-    : { type: "image", source: { type: "base64", media_type: body.mimeType, data: body.base64 } };
+  const fileStore = getStore({ name: "medical-reports" });
 
   try {
+    const bytes = await fileStore.get(body.blobKey, { type: "arrayBuffer" });
+    if (!bytes) {
+      throw new Error("File missing from storage");
+    }
+    const base64 = Buffer.from(bytes).toString("base64");
+    const contentBlock = body.mimeType === "application/pdf"
+      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
+      : { type: "image", source: { type: "base64", media_type: body.mimeType, data: base64 } };
+
     const anthropic = new Anthropic();
     const message = await anthropic.messages.create({
       model: "claude-sonnet-5",
