@@ -15,14 +15,14 @@ exports.handler = async (event, context) => {
   const db = getDatabase();
 
   if (event.httpMethod === "GET") {
-    const rows = await db.sql`SELECT data, updated_at FROM user_data WHERE user_id = ${userId}`;
+    const rows = await db.sql`SELECT data, updated_at, force_logout_at FROM user_data WHERE user_id = ${userId}`;
     if (!rows.length) {
-      return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: null }) };
+      return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: null, forceLogoutAt: null }) };
     }
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: rows[0].data, updatedAt: rows[0].updated_at })
+      body: JSON.stringify({ data: rows[0].data, updatedAt: rows[0].updated_at, forceLogoutAt: rows[0].force_logout_at })
     };
   }
 
@@ -33,6 +33,23 @@ exports.handler = async (event, context) => {
     } catch (e) {
       return { statusCode: 400, body: JSON.stringify({ error: "Invalid JSON" }) };
     }
+
+    // A signed-in device asking every other device to sign itself out.
+    // Doesn't touch your saved data at all.
+    if (body && body.action === "force_logout_all") {
+      const rows = await db.sql`
+        INSERT INTO user_data (user_id, data, updated_at, force_logout_at)
+        VALUES (${userId}, '{}'::jsonb, now(), now())
+        ON CONFLICT (user_id) DO UPDATE SET force_logout_at = now()
+        RETURNING force_logout_at
+      `;
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ok: true, forceLogoutAt: rows[0] && rows[0].force_logout_at })
+      };
+    }
+
     if (!body || typeof body.data !== "object" || body.data === null) {
       return { statusCode: 400, body: JSON.stringify({ error: "Missing data" }) };
     }
