@@ -17,7 +17,11 @@ exports.handler = async (event, context) => {
     return { statusCode: 401, body: JSON.stringify({ error: "Not authenticated" }) };
   }
   const userId = user.sub;
-  const store = getStore({ name: "user-sync-data", consistency: "strong" });
+  // "strong" consistency needs extra edge configuration not available in
+  // classic (Lambda-compat) functions -- default "eventual" consistency
+  // works fine here and just means a write can take up to ~60s to be
+  // visible to a read from a different request.
+  const store = getStore({ name: "user-sync-data" });
 
   if (event.httpMethod === "GET") {
     const record = await store.get(userId, { type: "json" });
