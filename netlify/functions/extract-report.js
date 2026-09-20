@@ -34,7 +34,6 @@ exports.handler = async (event, context) => {
   const userId = user.sub;
 
   const indexStore = getStore({ name: "medical-reports-index" });
-  const fileStore = getStore({ name: "medical-reports" });
   const resultsStore = getStore({ name: "medical-reports-results" });
   const jobsStore = getStore({ name: "medical-reports-extraction-jobs" });
 
@@ -104,11 +103,6 @@ exports.handler = async (event, context) => {
 
     // Default action: START an extraction job and return immediately.
     // The client polls GET ?jobId=... for the result -- see above.
-    const bytes = await fileStore.get(record.blobKey, { type: "arrayBuffer" });
-    if (!bytes) {
-      return { statusCode: 404, body: JSON.stringify({ error: "File missing from storage" }) };
-    }
-    const base64 = Buffer.from(bytes).toString("base64");
     const jobId = crypto.randomUUID();
 
     await jobsStore.setJSON(jobId, { status: "pending", userId: userId, reportId: body.id, startedAt: new Date().toISOString() });
@@ -118,15 +112,21 @@ exports.handler = async (event, context) => {
       // present in this project's classic functions -- same pattern seen
       // elsewhere tonight -- so this is hardcoded to the site's real, known
       // address instead of depending on it.
+      //
+      // The trigger payload only carries a reference to the file (its Blobs
+      // key), not the file's contents -- sending the base64-encoded bytes
+      // through this internal call hit a 413 Payload Too Large. The
+      // background function fetches the actual bytes itself.
       const bridgeUrl = "https://amanmotiyar.in/.netlify/functions/claude-extract-background";
       const triggerRes = await fetch(bridgeUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_BRIDGE_SECRET || "" },
-        body: JSON.stringify({ jobId: jobId, userId: userId, base64: base64, mimeType: record.mimeType, prompt: EXTRACTION_PROMPT })
+        body: JSON.stringify({ jobId: jobId, userId: userId, blobKey: record.blobKey, mimeType: record.mimeType, prompt: EXTRACTION_PROMPT })
       });
-      let triggerBodyText = "";
-      try { triggerBodyText = await triggerRes.text(); } catch (e2) {}
-      console.error("diagnostic -- trigger call response status:", triggerRes.status, "ok:", triggerRes.ok, "body (first 200 chars):", triggerBodyText.slice(0, 200));
+      if (!triggerRes.ok) {
+        console.error("trigger call failed with status:", triggerRes.status);
+        await jobsStore.setJSON(jobId, { status: "error", error: "Could not start extraction. Try again.", userId: userId, reportId: body.id });
+      }
     } catch (e) {
       console.error("could not start extraction job:", e && e.message);
       await jobsStore.setJSON(jobId, { status: "error", error: "Could not start extraction. Try again.", userId: userId, reportId: body.id });
