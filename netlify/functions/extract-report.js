@@ -119,11 +119,14 @@ exports.handler = async (event, context) => {
       // elsewhere tonight -- so this is hardcoded to the site's real, known
       // address instead of depending on it.
       const bridgeUrl = "https://amanmotiyar.in/.netlify/functions/claude-extract-background";
-      await fetch(bridgeUrl, {
+      const triggerRes = await fetch(bridgeUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_BRIDGE_SECRET || "" },
         body: JSON.stringify({ jobId: jobId, userId: userId, base64: base64, mimeType: record.mimeType, prompt: EXTRACTION_PROMPT })
       });
+      let triggerBodyText = "";
+      try { triggerBodyText = await triggerRes.text(); } catch (e2) {}
+      console.error("diagnostic -- trigger call response status:", triggerRes.status, "ok:", triggerRes.ok, "body (first 200 chars):", triggerBodyText.slice(0, 200));
     } catch (e) {
       console.error("could not start extraction job:", e && e.message);
       await jobsStore.setJSON(jobId, { status: "error", error: "Could not start extraction. Try again.", userId: userId, reportId: body.id });
