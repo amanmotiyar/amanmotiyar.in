@@ -108,7 +108,11 @@ exports.handler = async (event, context) => {
 
     let message;
     try {
-      const bridgeUrl = (process.env.URL || "") + "/.netlify/functions/claude-extract";
+      // process.env.URL (Netlify's usual auto-injected site URL) isn't reliably
+      // present in this project's classic functions either -- same pattern as
+      // everything else tonight -- so this is hardcoded to the site's real,
+      // known address instead of depending on it.
+      const bridgeUrl = "https://amanmotiyar.in/.netlify/functions/claude-extract";
       const bridgeRes = await fetch(bridgeUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_BRIDGE_SECRET || "" },
