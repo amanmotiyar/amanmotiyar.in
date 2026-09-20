@@ -37,14 +37,18 @@ exports.handler = async (event, context) => {
       return { statusCode: 400, body: JSON.stringify({ error: "Missing data" }) };
     }
 
-    await db.sql`
+    const rows = await db.sql`
       INSERT INTO user_data (user_id, data, updated_at)
       VALUES (${userId}, ${JSON.stringify(body.data)}::jsonb, now())
       ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()
+      RETURNING updated_at
     `;
-    return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: true }) };
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ok: true, updatedAt: rows[0] && rows[0].updated_at })
+    };
   }
 
   return { statusCode: 405, body: JSON.stringify({ error: "Method not allowed" }) };
 };
-
