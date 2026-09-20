@@ -3318,11 +3318,16 @@
 
   function parseRange(rangeStr){
     if(!rangeStr) return null;
-    rangeStr = String(rangeStr).trim();
+    var raw = String(rangeStr).trim();
+    // Normalize the various dash characters labs use ("\u2012\u2013\u2014\u2212", i.e.
+    // figure dash, en dash, em dash, minus sign) to a plain hyphen for two-sided ranges.
+    var normalized = raw.replace(/[\u2012\u2013\u2014\u2212]/g, "-");
     var m;
-    if((m = rangeStr.match(/^([\d.]+)\s*-\s*([\d.]+)$/))) return { min: parseFloat(m[1]), max: parseFloat(m[2]) };
-    if((m = rangeStr.match(/^<\s*=?\s*([\d.]+)$/))) return { max: parseFloat(m[1]) };
-    if((m = rangeStr.match(/^>\s*=?\s*([\d.]+)$/))) return { min: parseFloat(m[1]) };
+    if((m = normalized.match(/^([\d.]+)\s*-\s*([\d.]+)$/))) return { min: parseFloat(m[1]), max: parseFloat(m[2]) };
+    // One-sided limits: <x, <=x, \u2264x (\u2264 = "less than or equal to")
+    if((m = raw.match(/^(?:<|\u2264)\s*=?\s*([\d.]+)$/))) return { max: parseFloat(m[1]) };
+    // >x, >=x, \u2265x (\u2265 = "greater than or equal to")
+    if((m = raw.match(/^(?:>|\u2265)\s*=?\s*([\d.]+)$/))) return { min: parseFloat(m[1]) };
     return null;
   }
 
@@ -3331,15 +3336,19 @@
       return { status: "red", reason: "Lab-reported critical flag on this report: \"" + test.labFlag + "\"" };
     }
     if(test.value === null || test.value === undefined || test.value === ""){
-      return { status: "grey", reason: "No value recorded for this test" };
+      return { status: "grey", reason: "Needs verification \u2014 no value recorded for this test" };
     }
     var val = parseFloat(test.value);
-    if(isNaN(val)){
-      return { status: "grey", reason: "Value (\"" + test.value + "\") isn't a plain number, so it can't be automatically compared to a range" };
+    // Reject values like "G1" or "Negative" that parseFloat would otherwise
+    // partially parse (e.g. parseFloat("5mg") = 5) -- only a value that is
+    // ENTIRELY numeric is treated as comparable; anything else (categorical
+    // results included) is left as Needs verification rather than guessed at.
+    if(isNaN(val) || !/^-?[\d.]+$/.test(String(test.value).trim())){
+      return { status: "grey", reason: "Needs verification \u2014 value (\"" + test.value + "\") is not a plain number, so it can't be automatically compared to a range" };
     }
     var range = parseRange(test.referenceRange);
     if(!range){
-      return { status: "grey", reason: "Reference range (\"" + (test.referenceRange || "not recorded") + "\") couldn't be read as a simple range" };
+      return { status: "grey", reason: "Needs verification \u2014 reference range (\"" + (test.referenceRange || "not recorded") + "\") could not be reliably parsed" };
     }
     var inRange = true;
     if(range.min !== undefined && val < range.min) inRange = false;
@@ -3349,7 +3358,13 @@
   }
 
   var MEDICAL_STATUS_COLORS = { green: "#4CAF7D", yellow: "#E8C766", grey: "#8A8496", red: "#E85D75" };
-  var MEDICAL_STATUS_LABELS = { green: "In range", yellow: "Outside range", grey: "Unverified", red: "Critical" };
+  var MEDICAL_STATUS_LABELS = {
+    green: "\ud83d\udfe2 Within reported range",
+    yellow: "\ud83d\udfe1 Outside reported range",
+    grey: "\u26aa Needs verification",
+    red: "\ud83d\udd34 Critical flag"
+  };
+  var MEDICAL_STATUS_SORT_ORDER = { red: 0, yellow: 1, grey: 2, green: 3 };
 
   /* ---------------- phase 2: extraction (server call), review, save ---------------- */
 
@@ -3526,33 +3541,41 @@
 
     var disclaimer = document.createElement("p");
     disclaimer.style.cssText = "margin-bottom:16px; padding:12px 16px; border:1px solid rgba(232,93,117,0.3); border-radius:10px; background:rgba(232,93,117,0.06); font-size:13px; line-height:1.6;";
-    disclaimer.innerHTML = "<strong>This is a report-reading aid, not a medical assessment.</strong> It only compares each value to the range printed on this specific report \u2014 it doesn't diagnose anything, suggest treatment, or mean you're healthy if everything shows green. Confirmed " + new Date(results.confirmedAt).toLocaleString("en-IN") + ".";
+    disclaimer.innerHTML = "<strong>This is a report-reading aid, not a medical assessment.</strong> Each status only compares a value to the range printed on this specific report. There is no overall health score here, nothing here diagnoses a condition, and results showing \ud83d\udfe2 do not mean you're healthy. Confirmed " + new Date(results.confirmedAt).toLocaleString("en-IN") + ".";
     medicalDetailContainer.appendChild(disclaimer);
 
     var tableWrap = document.createElement("div");
     tableWrap.className = "fin-table-wrap";
     var table = document.createElement("table");
     table.className = "fin-table";
-    table.innerHTML = "<thead><tr><th>Test</th><th>Value</th><th>Reference range</th><th>Status</th><th>Why</th></tr></thead>";
+    table.innerHTML = "<thead><tr><th>Status</th><th>Test</th><th>Value</th><th>Reference range</th><th>Section</th><th>Why</th></tr></thead>";
     var tbody = document.createElement("tbody");
 
-    var lastSection = null;
-    (results.tests || []).forEach(function(t){
-      if(t.section && t.section !== lastSection){
-        lastSection = t.section;
-        var secTr = document.createElement("tr");
-        secTr.innerHTML = '<td colspan="5" style="font-family:\'JetBrains Mono\',monospace; font-size:10.5px; letter-spacing:0.06em; color:var(--faint); padding-top:16px;">' + escapeHtml(t.section.toUpperCase()) + '</td>';
-        tbody.appendChild(secTr);
-      }
-      var status = computeTestStatus(t);
+    var rows = (results.tests || []).map(function(t){
+      return { test: t, status: computeTestStatus(t) };
+    });
+    // Needs-attention first: critical, then outside range, then unverified,
+    // then confirmed-normal last. Stable within each group (keeps the
+    // report's own original order among equally-ranked rows).
+    rows = rows.map(function(r, i){ return { r: r, i: i }; })
+      .sort(function(a, b){
+        var diff = MEDICAL_STATUS_SORT_ORDER[a.r.status.status] - MEDICAL_STATUS_SORT_ORDER[b.r.status.status];
+        return diff !== 0 ? diff : a.i - b.i;
+      })
+      .map(function(x){ return x.r; });
+
+    rows.forEach(function(row){
+      var t = row.test;
+      var status = row.status;
       var color = MEDICAL_STATUS_COLORS[status.status];
       var tr = document.createElement("tr");
       tr.className = "fin-row";
       tr.innerHTML =
+        '<td><span style="display:inline-block; padding:3px 10px; border-radius:20px; font-size:11px; font-family:\'JetBrains Mono\',monospace; background:' + color + '22; color:' + color + ';">' + MEDICAL_STATUS_LABELS[status.status] + '</span></td>' +
         "<td>" + escapeHtml(t.name || "") + "</td>" +
         "<td>" + escapeHtml(((t.value === null || t.value === undefined) ? "\u2014" : t.value) + (t.unit ? (" " + t.unit) : "")) + "</td>" +
         "<td>" + escapeHtml(t.referenceRange || "\u2014") + "</td>" +
-        '<td><span style="display:inline-block; padding:3px 10px; border-radius:20px; font-size:11px; font-family:\'JetBrains Mono\',monospace; background:' + color + '22; color:' + color + ';">' + MEDICAL_STATUS_LABELS[status.status] + '</span></td>' +
+        '<td style="font-size:11px; color:var(--faint);">' + escapeHtml(t.section || "\u2014") + "</td>" +
         '<td style="font-size:12px; color:var(--faint);">' + escapeHtml(status.reason) + "</td>";
       tbody.appendChild(tr);
     });
