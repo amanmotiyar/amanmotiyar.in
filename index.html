@@ -3848,24 +3848,7 @@
     if(json === lastSyncedJSON || syncInFlight) return;
     syncInFlight = true;
     setSyncStatus("Syncing\u2026");
-    var token;
-    user.jwt().then(function(t){
-      token = t;
-      // Check first: has this account's cloud data changed since this device last
-      // synced it? If so, don't silently clobber whatever changed elsewhere.
-      return fetch(SYNC_ENDPOINT, { headers: { "Authorization": "Bearer " + token } });
-    }).then(function(res){ return res.json(); }).then(function(check){
-      if(check) handleForceLogoutCheck(check.forceLogoutAt);
-      var remoteUpdatedAt = check && check.updatedAt;
-      if(remoteUpdatedAt && lastKnownServerUpdatedAt && remoteUpdatedAt !== lastKnownServerUpdatedAt){
-        var keepThisDevice = confirm(
-          "Your data changed on another device since this device last synced.\n\n" +
-          "Press OK to keep THIS device's version (the other device's newer changes will be overwritten).\n" +
-          "Press Cancel to load the newer version instead (unsynced changes on this device will be discarded)."
-        );
-        if(keepThisDevice) return doPush(token, json);
-        return pullFromServer(false);
-      }
+    user.jwt().then(function(token){
       return doPush(token, json);
     }).then(function(){
       syncInFlight = false;
