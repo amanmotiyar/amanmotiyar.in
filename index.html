@@ -3355,7 +3355,7 @@
 
   function extractReport(reportId){
     if(!medicalDetailContainer) return;
-    medicalDetailContainer.innerHTML = '<p class="empty">Sending this report to Claude via Netlify\u2019s AI Gateway to read it\u2026 this can take 10\u201320 seconds for a long report.</p>';
+    medicalDetailContainer.innerHTML = '<p class="empty">Sending this report to Claude via Netlify\u2019s AI Gateway to read it\u2026 this can take up to a minute or so for a long report.</p>';
     var user = window.netlifyIdentity.currentUser();
     user.jwt().then(function(token){
       return fetch(MEDICAL_EXTRACT_ENDPOINT, {
@@ -3370,10 +3370,33 @@
         medicalDetailContainer.innerHTML = '<p class="empty">' + escapeHtml((r.body && r.body.error) || "Extraction failed. Try again.") + '</p>';
         return;
       }
-      renderExtractionReview(reportId, r.body.tests || []);
+      pollExtractionJob(reportId, r.body.jobId, 0);
     }).catch(function(e){
       console.error("extraction failed", e);
       medicalDetailContainer.innerHTML = '<p class="empty">Could not reach the extraction service. Try again.</p>';
+    });
+  }
+
+  function pollExtractionJob(reportId, jobId, attempt){
+    if(attempt > 40){
+      medicalDetailContainer.innerHTML = '<p class="empty">This is taking longer than expected. Try again in a moment.</p>';
+      return;
+    }
+    var user = window.netlifyIdentity.currentUser();
+    user.jwt().then(function(token){
+      return fetch(MEDICAL_EXTRACT_ENDPOINT + "?jobId=" + encodeURIComponent(jobId), { headers: { "Authorization": "Bearer " + token } });
+    }).then(function(res){ return res.json(); }).then(function(body){
+      if(body.status === "done"){
+        renderExtractionReview(reportId, body.tests || []);
+      }else if(body.status === "error"){
+        medicalDetailContainer.innerHTML = '<p class="empty">' + escapeHtml(body.error || "Extraction failed. Try again.") + '</p>';
+      }else{
+        medicalDetailContainer.innerHTML = '<p class="empty">Reading your report\u2026</p>';
+        setTimeout(function(){ pollExtractionJob(reportId, jobId, attempt + 1); }, 3000);
+      }
+    }).catch(function(e){
+      console.error("poll failed", e);
+      setTimeout(function(){ pollExtractionJob(reportId, jobId, attempt + 1); }, 3000);
     });
   }
 
