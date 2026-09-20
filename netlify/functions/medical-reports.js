@@ -1,10 +1,14 @@
+// Private medical report library. Originally kept file bytes in Blobs and
+// metadata in the database -- moved metadata onto Blobs too (a small per-user
+// index) since the database connection isn't reaching Functions in this
+// project (see sync-data.js for the full explanation). Every operation still
+// checks the report belongs to the signed-in user's own index before ever
+// touching it -- that check is what keeps one user's reports from being
+// reachable by another, same as before.
+
 const crypto = require("crypto");
-const { getDatabase, getConnectionString } = require("@netlify/database");
 const { getStore, connectLambda } = require("@netlify/blobs");
 
-// Kept deliberately small: classic Netlify Functions cap request/response
-// payloads around 6MB, and base64 inflates size by ~33%, so this leaves
-// headroom. Revisit if larger scanned reports are needed later.
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const ALLOWED_MIME = ["application/pdf", "image/jpeg", "image/png"];
 
@@ -17,26 +21,35 @@ exports.handler = async (event, context) => {
   }
   const userId = user.sub;
 
-  // Classic exports.handler functions run in "Lambda compatibility mode" --
-  // the one place Netlify Database can't auto-detect its connection, so it
-  // has to be passed in explicitly here.
-  const db = getDatabase({ connectionString: getConnectionString() });
-  // "strong" consistency: a report you just uploaded must show up in your
-  // very next list/view call, not eventually.
-  const store = getStore({ name: "medical-reports", consistency: "strong" });
+  const fileStore = getStore({ name: "medical-reports", consistency: "strong" });
+  const indexStore = getStore({ name: "medical-reports-index", consistency: "strong" });
+
+  async function getIndex() {
+    const idx = await indexStore.get(userId, { type: "json" });
+    return idx || [];
+  }
+  async function setIndex(list) {
+    await indexStore.setJSON(userId, list);
+  }
+  function sortedForDisplay(list) {
+    return list.slice().sort(function (a, b) {
+      if (a.reportDate && b.reportDate) return b.reportDate.localeCompare(a.reportDate);
+      if (a.reportDate && !b.reportDate) return -1;
+      if (!a.reportDate && b.reportDate) return 1;
+      return new Date(b.uploadedAt) - new Date(a.uploadedAt);
+    });
+  }
 
   if (event.httpMethod === "GET") {
     const params = event.queryStringParameters || {};
 
     if (params.id && params.action === "file") {
-      const rows = await db.sql`
-        SELECT * FROM medical_reports WHERE id = ${params.id} AND user_id = ${userId}
-      `;
-      if (!rows.length) {
+      const list = await getIndex();
+      const record = list.find(function (r) { return r.id === params.id; });
+      if (!record) {
         return { statusCode: 404, body: JSON.stringify({ error: "Not found" }) };
       }
-      const record = rows[0];
-      const bytes = await store.get(record.blob_key, { type: "arrayBuffer" });
+      const bytes = await fileStore.get(record.blobKey, { type: "arrayBuffer" });
       if (!bytes) {
         return { statusCode: 404, body: JSON.stringify({ error: "File missing from storage" }) };
       }
@@ -44,7 +57,7 @@ exports.handler = async (event, context) => {
       return {
         statusCode: 200,
         headers: {
-          "Content-Type": record.mime_type,
+          "Content-Type": record.mimeType,
           "Content-Disposition": 'inline; filename="' + safeName + '"'
         },
         body: Buffer.from(bytes).toString("base64"),
@@ -52,16 +65,18 @@ exports.handler = async (event, context) => {
       };
     }
 
-    const rows = await db.sql`
-      SELECT id, filename, mime_type, size_bytes, report_date, uploaded_at
-      FROM medical_reports
-      WHERE user_id = ${userId}
-      ORDER BY report_date DESC NULLS LAST, uploaded_at DESC
-    `;
+    const list = sortedForDisplay(await getIndex());
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reports: rows })
+      body: JSON.stringify({
+        reports: list.map(function (r) {
+          return {
+            id: r.id, filename: r.filename, mime_type: r.mimeType,
+            size_bytes: r.sizeBytes, report_date: r.reportDate, uploaded_at: r.uploadedAt
+          };
+        })
+      })
     };
   }
 
@@ -93,27 +108,23 @@ exports.handler = async (event, context) => {
     }
 
     const id = crypto.randomUUID();
-    // Every stored key is prefixed with the owner's user id. Nothing else in
-    // this function ever reads or writes a blob key without first checking
-    // that the matching database row belongs to this same user_id -- that
-    // check, not the store itself, is what keeps one user's reports from
-    // being reachable by another.
     const blobKey = userId + "/" + id;
+    await fileStore.set(blobKey, buffer, { metadata: { mimeType: body.mimeType, filename: body.filename } });
 
-    await store.set(blobKey, buffer, {
-      metadata: { mimeType: body.mimeType, filename: body.filename }
+    const list = await getIndex();
+    const uploadedAt = new Date().toISOString();
+    list.push({
+      id: id, filename: body.filename, mimeType: body.mimeType,
+      sizeBytes: buffer.length, reportDate: body.reportDate || null,
+      uploadedAt: uploadedAt, blobKey: blobKey
     });
-
-    await db.sql`
-      INSERT INTO medical_reports (id, user_id, filename, mime_type, size_bytes, report_date, uploaded_at, blob_key)
-      VALUES (${id}, ${userId}, ${body.filename}, ${body.mimeType}, ${buffer.length}, ${body.reportDate || null}, now(), ${blobKey})
-    `;
+    await setIndex(list);
 
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        id, filename: body.filename, mimeType: body.mimeType,
+        id: id, filename: body.filename, mimeType: body.mimeType,
         sizeBytes: buffer.length, reportDate: body.reportDate || null
       })
     };
@@ -124,14 +135,14 @@ exports.handler = async (event, context) => {
     if (!params.id) {
       return { statusCode: 400, body: JSON.stringify({ error: "Missing id" }) };
     }
-    const rows = await db.sql`
-      SELECT blob_key FROM medical_reports WHERE id = ${params.id} AND user_id = ${userId}
-    `;
-    if (!rows.length) {
+    const list = await getIndex();
+    const idx = list.findIndex(function (r) { return r.id === params.id; });
+    if (idx === -1) {
       return { statusCode: 404, body: JSON.stringify({ error: "Not found" }) };
     }
-    await store.delete(rows[0].blob_key);
-    await db.sql`DELETE FROM medical_reports WHERE id = ${params.id} AND user_id = ${userId}`;
+    await fileStore.delete(list[idx].blobKey);
+    list.splice(idx, 1);
+    await setIndex(list);
     return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: true }) };
   }
 
