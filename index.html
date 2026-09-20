@@ -325,6 +325,8 @@
   var MEDICAL_ENDPOINT = "/.netlify/functions/medical-reports";
   var MEDICAL_MAX_BYTES = 4 * 1024 * 1024;
   var MEDICAL_ALLOWED_MIME = ["application/pdf", "image/jpeg", "image/png"];
+  var MEDICAL_EXTRACT_ENDPOINT = "/.netlify/functions/extract-report";
+  var medicalDetailContainer = null;
   var medicalReportsListContainer = null;
 
   var GOALS_ACCENT = "#B98CE8";
@@ -3312,6 +3314,235 @@
            "<td>" + new Date(r.uploaded_at).toLocaleDateString("en-IN") + "</td>";
   }
 
+  /* ---------------- phase 3: result highlighting (pure, no network) ---------------- */
+
+  function parseRange(rangeStr){
+    if(!rangeStr) return null;
+    rangeStr = String(rangeStr).trim();
+    var m;
+    if((m = rangeStr.match(/^([\d.]+)\s*-\s*([\d.]+)$/))) return { min: parseFloat(m[1]), max: parseFloat(m[2]) };
+    if((m = rangeStr.match(/^<\s*=?\s*([\d.]+)$/))) return { max: parseFloat(m[1]) };
+    if((m = rangeStr.match(/^>\s*=?\s*([\d.]+)$/))) return { min: parseFloat(m[1]) };
+    return null;
+  }
+
+  function computeTestStatus(test){
+    if(test.labFlag && /critical|panic|crit/i.test(test.labFlag)){
+      return { status: "red", reason: "Lab-reported critical flag on this report: \"" + test.labFlag + "\"" };
+    }
+    if(test.value === null || test.value === undefined || test.value === ""){
+      return { status: "grey", reason: "No value recorded for this test" };
+    }
+    var val = parseFloat(test.value);
+    if(isNaN(val)){
+      return { status: "grey", reason: "Value (\"" + test.value + "\") isn't a plain number, so it can't be automatically compared to a range" };
+    }
+    var range = parseRange(test.referenceRange);
+    if(!range){
+      return { status: "grey", reason: "Reference range (\"" + (test.referenceRange || "not recorded") + "\") couldn't be read as a simple range" };
+    }
+    var inRange = true;
+    if(range.min !== undefined && val < range.min) inRange = false;
+    if(range.max !== undefined && val > range.max) inRange = false;
+    if(inRange) return { status: "green", reason: "Within the printed range (" + test.referenceRange + ")" };
+    return { status: "yellow", reason: "Outside the printed range (" + test.referenceRange + ")" };
+  }
+
+  var MEDICAL_STATUS_COLORS = { green: "#4CAF7D", yellow: "#E8C766", grey: "#8A8496", red: "#E85D75" };
+  var MEDICAL_STATUS_LABELS = { green: "In range", yellow: "Outside range", grey: "Unverified", red: "Critical" };
+
+  /* ---------------- phase 2: extraction (server call), review, save ---------------- */
+
+  function extractReport(reportId){
+    if(!medicalDetailContainer) return;
+    medicalDetailContainer.innerHTML = '<p class="empty">Sending this report to Claude via Netlify\u2019s AI Gateway to read it\u2026 this can take 10\u201320 seconds for a long report.</p>';
+    var user = window.netlifyIdentity.currentUser();
+    user.jwt().then(function(token){
+      return fetch(MEDICAL_EXTRACT_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+        body: JSON.stringify({ id: reportId })
+      });
+    }).then(function(res){
+      return res.json().then(function(body){ return { res: res, body: body }; });
+    }).then(function(r){
+      if(!r.res.ok || (r.body && r.body.error)){
+        medicalDetailContainer.innerHTML = '<p class="empty">' + escapeHtml((r.body && r.body.error) || "Extraction failed. Try again.") + '</p>';
+        return;
+      }
+      renderExtractionReview(reportId, r.body.tests || []);
+    }).catch(function(e){
+      console.error("extraction failed", e);
+      medicalDetailContainer.innerHTML = '<p class="empty">Could not reach the extraction service. Try again.</p>';
+    });
+  }
+
+  function renderExtractionReview(reportId, tests){
+    medicalDetailContainer.innerHTML = "";
+
+    var note = document.createElement("p");
+    note.className = "hero-loop";
+    note.style.marginBottom = "14px";
+    note.textContent = "Check each row against the original report (use View above) and correct anything that's wrong before saving. Nothing is kept until you save.";
+    medicalDetailContainer.appendChild(note);
+
+    var rowsState = tests.map(function(t){
+      return {
+        section: t.section || "", name: t.name || "",
+        value: (t.value === null || t.value === undefined) ? "" : String(t.value),
+        unit: t.unit || "", referenceRange: t.referenceRange || "", labFlag: t.labFlag || ""
+      };
+    });
+
+    var tableWrap = document.createElement("div");
+    tableWrap.className = "fin-table-wrap";
+    var table = document.createElement("table");
+    table.className = "fin-table";
+    table.innerHTML = "<thead><tr><th>Section</th><th>Test</th><th>Value</th><th>Unit</th><th>Reference range</th><th>Lab flag</th><th></th></tr></thead>";
+    var tbody = document.createElement("tbody");
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    medicalDetailContainer.appendChild(tableWrap);
+
+    function cellInput(idx, field, value){
+      var td = document.createElement("td");
+      var inp = document.createElement("input");
+      inp.type = "text"; inp.value = value; inp.style.width = "100%";
+      inp.addEventListener("input", function(){ rowsState[idx][field] = inp.value; });
+      td.appendChild(inp);
+      return td;
+    }
+
+    function renderRows(){
+      tbody.innerHTML = "";
+      rowsState.forEach(function(t, idx){
+        var tr = document.createElement("tr");
+        tr.className = "fin-row";
+        tr.appendChild(cellInput(idx, "section", t.section));
+        tr.appendChild(cellInput(idx, "name", t.name));
+        tr.appendChild(cellInput(idx, "value", t.value));
+        tr.appendChild(cellInput(idx, "unit", t.unit));
+        tr.appendChild(cellInput(idx, "referenceRange", t.referenceRange));
+        tr.appendChild(cellInput(idx, "labFlag", t.labFlag));
+        var delTd = document.createElement("td");
+        var delBtn = document.createElement("button");
+        delBtn.className = "s-remove"; delBtn.textContent = "\u00d7"; delBtn.title = "Remove this row";
+        delBtn.addEventListener("click", function(){ rowsState.splice(idx, 1); renderRows(); });
+        delTd.appendChild(delBtn);
+        tr.appendChild(delTd);
+        tbody.appendChild(tr);
+      });
+    }
+    renderRows();
+
+    var btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex; gap:12px; margin-top:16px;";
+    var saveBtn = document.createElement("button");
+    saveBtn.className = "log-btn"; saveBtn.textContent = "Save confirmed results";
+    saveBtn.addEventListener("click", function(){
+      var cleaned = rowsState.filter(function(t){ return t.name; }).map(function(t){
+        return {
+          section: t.section || null, name: t.name,
+          value: t.value === "" ? null : t.value,
+          unit: t.unit || null,
+          referenceRange: t.referenceRange || null,
+          labFlag: t.labFlag || null
+        };
+      });
+      saveConfirmedResults(reportId, cleaned);
+    });
+    var discardBtn = document.createElement("button");
+    discardBtn.className = "fin-edit-btn"; discardBtn.textContent = "Discard";
+    discardBtn.addEventListener("click", function(){ medicalDetailContainer.innerHTML = ""; });
+    btnRow.appendChild(saveBtn);
+    btnRow.appendChild(discardBtn);
+    medicalDetailContainer.appendChild(btnRow);
+  }
+
+  function saveConfirmedResults(reportId, tests){
+    medicalDetailContainer.innerHTML = '<p class="empty">Saving\u2026</p>';
+    var user = window.netlifyIdentity.currentUser();
+    user.jwt().then(function(token){
+      return fetch(MEDICAL_EXTRACT_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+        body: JSON.stringify({ id: reportId, action: "save", tests: tests })
+      });
+    }).then(function(res){ return res.json(); }).then(function(body){
+      if(body && body.error){
+        medicalDetailContainer.innerHTML = '<p class="empty">' + escapeHtml(body.error) + '</p>';
+        return;
+      }
+      viewConfirmedResults(reportId);
+    }).catch(function(e){
+      console.error("save results failed", e);
+      medicalDetailContainer.innerHTML = '<p class="empty">Could not save. Try again.</p>';
+    });
+  }
+
+  function viewConfirmedResults(reportId){
+    if(!medicalDetailContainer) return;
+    medicalDetailContainer.innerHTML = '<p class="empty">Loading\u2026</p>';
+    var user = window.netlifyIdentity.currentUser();
+    user.jwt().then(function(token){
+      return fetch(MEDICAL_EXTRACT_ENDPOINT + "?id=" + encodeURIComponent(reportId), { headers: { "Authorization": "Bearer " + token } });
+    }).then(function(res){ return res.json(); }).then(function(body){
+      if(!body || !body.results){
+        medicalDetailContainer.innerHTML = '<p class="empty">No confirmed results yet for this report. Click "Extract results" to read it.</p>';
+        return;
+      }
+      renderHighlightedResults(body.results);
+    }).catch(function(e){
+      console.error("load results failed", e);
+      medicalDetailContainer.innerHTML = '<p class="empty">Could not load results. Try again.</p>';
+    });
+  }
+
+  function renderHighlightedResults(results){
+    medicalDetailContainer.innerHTML = "";
+
+    var disclaimer = document.createElement("p");
+    disclaimer.style.cssText = "margin-bottom:16px; padding:12px 16px; border:1px solid rgba(232,93,117,0.3); border-radius:10px; background:rgba(232,93,117,0.06); font-size:13px; line-height:1.6;";
+    disclaimer.innerHTML = "<strong>This is a report-reading aid, not a medical assessment.</strong> It only compares each value to the range printed on this specific report \u2014 it doesn't diagnose anything, suggest treatment, or mean you're healthy if everything shows green. Confirmed " + new Date(results.confirmedAt).toLocaleString("en-IN") + ".";
+    medicalDetailContainer.appendChild(disclaimer);
+
+    var tableWrap = document.createElement("div");
+    tableWrap.className = "fin-table-wrap";
+    var table = document.createElement("table");
+    table.className = "fin-table";
+    table.innerHTML = "<thead><tr><th>Test</th><th>Value</th><th>Reference range</th><th>Status</th><th>Why</th></tr></thead>";
+    var tbody = document.createElement("tbody");
+
+    var lastSection = null;
+    (results.tests || []).forEach(function(t){
+      if(t.section && t.section !== lastSection){
+        lastSection = t.section;
+        var secTr = document.createElement("tr");
+        secTr.innerHTML = '<td colspan="5" style="font-family:\'JetBrains Mono\',monospace; font-size:10.5px; letter-spacing:0.06em; color:var(--faint); padding-top:16px;">' + escapeHtml(t.section.toUpperCase()) + '</td>';
+        tbody.appendChild(secTr);
+      }
+      var status = computeTestStatus(t);
+      var color = MEDICAL_STATUS_COLORS[status.status];
+      var tr = document.createElement("tr");
+      tr.className = "fin-row";
+      tr.innerHTML =
+        "<td>" + escapeHtml(t.name || "") + "</td>" +
+        "<td>" + escapeHtml(((t.value === null || t.value === undefined) ? "\u2014" : t.value) + (t.unit ? (" " + t.unit) : "")) + "</td>" +
+        "<td>" + escapeHtml(t.referenceRange || "\u2014") + "</td>" +
+        '<td><span style="display:inline-block; padding:3px 10px; border-radius:20px; font-size:11px; font-family:\'JetBrains Mono\',monospace; background:' + color + '22; color:' + color + ';">' + MEDICAL_STATUS_LABELS[status.status] + '</span></td>' +
+        '<td style="font-size:12px; color:var(--faint);">' + escapeHtml(status.reason) + "</td>";
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    medicalDetailContainer.appendChild(tableWrap);
+
+    var closeBtn = document.createElement("button");
+    closeBtn.className = "fin-edit-btn"; closeBtn.style.marginTop = "14px"; closeBtn.textContent = "Close";
+    closeBtn.addEventListener("click", function(){ medicalDetailContainer.innerHTML = ""; });
+    medicalDetailContainer.appendChild(closeBtn);
+  }
+
   function fetchMedicalReportBlob(reportId){
     var user = window.netlifyIdentity.currentUser();
     return user.jwt().then(function(token){
@@ -3408,7 +3639,7 @@
       tableWrap.className = "fin-table-wrap";
       var table = document.createElement("table");
       table.className = "fin-table";
-      table.innerHTML = "<thead><tr><th>Report Date</th><th>Filename</th><th>Uploaded</th><th></th><th></th><th></th></tr></thead>";
+      table.innerHTML = "<thead><tr><th>Report Date</th><th>Filename</th><th>Uploaded</th><th></th><th></th><th></th><th></th><th></th></tr></thead>";
       var tbody = document.createElement("tbody");
       reports.forEach(function(r){
         var tr = document.createElement("tr");
@@ -3426,6 +3657,19 @@
         dlBtn.className = "fin-edit-btn"; dlBtn.textContent = "Download";
         dlBtn.addEventListener("click", function(){ downloadMedicalReport(r.id, r.filename); });
         dlTd.appendChild(dlBtn); tr.appendChild(dlTd);
+
+        var extractTd = document.createElement("td");
+        var extractBtn = document.createElement("button");
+        extractBtn.className = "fin-edit-btn"; extractBtn.textContent = "Extract results";
+        extractBtn.title = "Sends this report to Claude via Netlify's AI Gateway to read test values";
+        extractBtn.addEventListener("click", function(){ extractReport(r.id); });
+        extractTd.appendChild(extractBtn); tr.appendChild(extractTd);
+
+        var resultsTd = document.createElement("td");
+        var resultsBtn = document.createElement("button");
+        resultsBtn.className = "fin-edit-btn"; resultsBtn.textContent = "Results";
+        resultsBtn.addEventListener("click", function(){ viewConfirmedResults(r.id); });
+        resultsTd.appendChild(resultsBtn); tr.appendChild(resultsTd);
 
         var delTd = document.createElement("td");
         var delBtn = document.createElement("button");
@@ -3512,6 +3756,12 @@
     view.appendChild(listSection);
 
     renderMedicalReportsListInto(listContainer);
+
+    var detailSection = document.createElement("div");
+    detailSection.className = "fin-section";
+    detailSection.id = "medicalDetailSection";
+    view.appendChild(detailSection);
+    medicalDetailContainer = detailSection;
   }
 
   function buildDomain(view, key){
