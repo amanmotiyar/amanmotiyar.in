@@ -3679,13 +3679,23 @@
       updateAuthUI(user);
       if(!arrivedViaRecoveryLink){
         window.netlifyIdentity.close();
+        pullFromServer(true);
       }
-      pullFromServer(true);
+      // If this login came from a recovery/invite/confirmation link, the widget
+      // shows its own "set a new password" screen next -- don't compete with it
+      // by popping a confirm() dialog too. The deferred "close" handler below
+      // runs the cloud-data check once that screen is actually gone.
     });
     window.netlifyIdentity.on("logout", function(){
       lastKnownAuthId = null;
       clearLoginTimestamp();
       updateAuthUI(null);
+    });
+    window.netlifyIdentity.on("close", function(){
+      if(arrivedViaRecoveryLink){
+        arrivedViaRecoveryLink = false;
+        pullFromServer(true);
+      }
     });
     window.netlifyIdentity.init();
 
