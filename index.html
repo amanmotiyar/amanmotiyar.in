@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://identity.netlify.com/v1/netlify-identity-widget.js"></script>
 <style>
   :root{
     --bg:#170F2A;
@@ -270,6 +271,8 @@
     <div class="brand"><span class="name">Aman</span><span class="sub">MULTI LEVEL GROWTH</span></div>
     <div class="topright">
       <span class="clock" id="clockLine">—</span>
+      <span class="util-btn" id="syncStatus" style="cursor:default;">Not signed in</span>
+      <button class="util-btn" id="authBtn">Sign in to sync</button>
       <button class="util-btn" id="exportBtn">Export</button>
       <button class="util-btn" id="importBtn">Import</button>
       <button class="util-btn" id="resetBtn">Reset</button>
@@ -812,37 +815,40 @@
       goals: []
     };
   }
+  function hydrateState(parsed){
+    var base = defaultState();
+    Object.keys(base.domains).forEach(function(k){ if(parsed.domains && parsed.domains[k]) base.domains[k] = parsed.domains[k]; });
+    base.reviews = Array.isArray(parsed.reviews) ? parsed.reviews : [];
+    if(parsed.profile){ Object.keys(base.profile).forEach(function(k){ if(parsed.profile[k] !== undefined) base.profile[k] = parsed.profile[k]; }); }
+    if(parsed.finance){
+      base.finance.currentFY = parsed.finance.currentFY || base.finance.currentFY;
+      base.finance.targetSavingsRate = (parsed.finance.targetSavingsRate !== undefined) ? parsed.finance.targetSavingsRate : base.finance.targetSavingsRate;
+      base.finance.fy = parsed.finance.fy || {};
+      base.finance.monthlyReviews = parsed.finance.monthlyReviews || {};
+      migrateRecordedFlags(base.finance.fy);
+    }
+    if(parsed.forecast){
+      if(parsed.forecast.assumptions) mergeForecastAssumptions(base.forecast.assumptions, parsed.forecast.assumptions);
+      if(parsed.forecast.rangeMode) base.forecast.rangeMode = parsed.forecast.rangeMode;
+      if(parsed.forecast.selectedFY) base.forecast.selectedFY = parsed.forecast.selectedFY;
+      if(parsed.forecast.customStart) base.forecast.customStart = parsed.forecast.customStart;
+      if(parsed.forecast.customEnd) base.forecast.customEnd = parsed.forecast.customEnd;
+      if(parsed.forecast.reserve){
+        if(parsed.forecast.reserve.openingBalance !== undefined) base.forecast.reserve.openingBalance = parsed.forecast.reserve.openingBalance;
+        if(parsed.forecast.reserve.openingDate) base.forecast.reserve.openingDate = parsed.forecast.reserve.openingDate;
+        if(parsed.forecast.reserve.minReserveTarget !== undefined) base.forecast.reserve.minReserveTarget = parsed.forecast.reserve.minReserveTarget;
+      }
+    }
+    if(parsed.investments) mergeInvestments(base.investments, parsed.investments);
+    base.goals = Array.isArray(parsed.goals) ? parsed.goals : [];
+    return base;
+  }
   function loadState(){
     try{
       var raw = localStorage.getItem(STORAGE_KEY);
       if(!raw) return defaultState();
       var parsed = JSON.parse(raw);
-      var base = defaultState();
-      Object.keys(base.domains).forEach(function(k){ if(parsed.domains && parsed.domains[k]) base.domains[k] = parsed.domains[k]; });
-      base.reviews = Array.isArray(parsed.reviews) ? parsed.reviews : [];
-      if(parsed.profile){ Object.keys(base.profile).forEach(function(k){ if(parsed.profile[k] !== undefined) base.profile[k] = parsed.profile[k]; }); }
-      if(parsed.finance){
-        base.finance.currentFY = parsed.finance.currentFY || base.finance.currentFY;
-        base.finance.targetSavingsRate = (parsed.finance.targetSavingsRate !== undefined) ? parsed.finance.targetSavingsRate : base.finance.targetSavingsRate;
-        base.finance.fy = parsed.finance.fy || {};
-        base.finance.monthlyReviews = parsed.finance.monthlyReviews || {};
-        migrateRecordedFlags(base.finance.fy);
-      }
-      if(parsed.forecast){
-        if(parsed.forecast.assumptions) mergeForecastAssumptions(base.forecast.assumptions, parsed.forecast.assumptions);
-        if(parsed.forecast.rangeMode) base.forecast.rangeMode = parsed.forecast.rangeMode;
-        if(parsed.forecast.selectedFY) base.forecast.selectedFY = parsed.forecast.selectedFY;
-        if(parsed.forecast.customStart) base.forecast.customStart = parsed.forecast.customStart;
-        if(parsed.forecast.customEnd) base.forecast.customEnd = parsed.forecast.customEnd;
-        if(parsed.forecast.reserve){
-          if(parsed.forecast.reserve.openingBalance !== undefined) base.forecast.reserve.openingBalance = parsed.forecast.reserve.openingBalance;
-          if(parsed.forecast.reserve.openingDate) base.forecast.reserve.openingDate = parsed.forecast.reserve.openingDate;
-          if(parsed.forecast.reserve.minReserveTarget !== undefined) base.forecast.reserve.minReserveTarget = parsed.forecast.reserve.minReserveTarget;
-        }
-      }
-      if(parsed.investments) mergeInvestments(base.investments, parsed.investments);
-      base.goals = Array.isArray(parsed.goals) ? parsed.goals : [];
-      return base;
+      return hydrateState(parsed);
     }catch(e){ console.error("load failed", e); return defaultState(); }
   }
   function mergeInvestments(base, incoming){
@@ -863,7 +869,7 @@
   function scheduleSave(){
     clearTimeout(saveTimer);
     saveTimer = setTimeout(function(){
-      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); flagSaved(); }
+      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); flagSaved(); pushToServer(); }
       catch(e){ console.error("save failed", e); }
     }, 400);
   }
@@ -3465,31 +3471,7 @@
     reader.onload = function(){
       try{
         var parsed = JSON.parse(reader.result);
-        var base = defaultState();
-        Object.keys(base.domains).forEach(function(k){ if(parsed.domains && parsed.domains[k]) base.domains[k] = parsed.domains[k]; });
-        base.reviews = Array.isArray(parsed.reviews) ? parsed.reviews : [];
-        if(parsed.profile){ Object.keys(base.profile).forEach(function(k){ if(parsed.profile[k] !== undefined) base.profile[k] = parsed.profile[k]; }); }
-        if(parsed.finance){
-          base.finance.currentFY = parsed.finance.currentFY || base.finance.currentFY;
-          base.finance.targetSavingsRate = (parsed.finance.targetSavingsRate !== undefined) ? parsed.finance.targetSavingsRate : base.finance.targetSavingsRate;
-          base.finance.fy = parsed.finance.fy || {};
-          base.finance.monthlyReviews = parsed.finance.monthlyReviews || {};
-          migrateRecordedFlags(base.finance.fy);
-        }
-        if(parsed.forecast){
-          if(parsed.forecast.assumptions) mergeForecastAssumptions(base.forecast.assumptions, parsed.forecast.assumptions);
-          if(parsed.forecast.rangeMode) base.forecast.rangeMode = parsed.forecast.rangeMode;
-          if(parsed.forecast.selectedFY) base.forecast.selectedFY = parsed.forecast.selectedFY;
-          if(parsed.forecast.customStart) base.forecast.customStart = parsed.forecast.customStart;
-          if(parsed.forecast.customEnd) base.forecast.customEnd = parsed.forecast.customEnd;
-          if(parsed.forecast.reserve){
-            if(parsed.forecast.reserve.openingBalance !== undefined) base.forecast.reserve.openingBalance = parsed.forecast.reserve.openingBalance;
-            if(parsed.forecast.reserve.openingDate) base.forecast.reserve.openingDate = parsed.forecast.reserve.openingDate;
-            if(parsed.forecast.reserve.minReserveTarget !== undefined) base.forecast.reserve.minReserveTarget = parsed.forecast.reserve.minReserveTarget;
-          }
-        }
-        if(parsed.investments) mergeInvestments(base.investments, parsed.investments);
-        base.goals = Array.isArray(parsed.goals) ? parsed.goals : [];
+        var base = hydrateState(parsed);
         state = base;
         scheduleSave(); renderMain();
       }catch(err){ alert("Could not read that file \u2014 is it a life tracker export?"); }
@@ -3510,6 +3492,106 @@
   window.addEventListener("beforeunload", flushSaveNow);
   window.addEventListener("pagehide", flushSaveNow);
   document.addEventListener("visibilitychange", function(){ if(document.hidden) flushSaveNow(); });
+
+  /* ---------------- cloud sync (Netlify Identity + Netlify DB) ---------------- */
+
+  var SYNC_ENDPOINT = "/.netlify/functions/sync-data";
+  var syncEnabled = false;
+  var lastSyncedJSON = null;
+  var syncInFlight = false;
+
+  function setSyncStatus(text){
+    var el = document.getElementById("syncStatus");
+    if(el) el.textContent = text;
+  }
+
+  function updateAuthUI(user){
+    var authBtn = document.getElementById("authBtn");
+    if(user){
+      syncEnabled = true;
+      authBtn.textContent = "Sign out (" + user.email + ")";
+      setSyncStatus("Synced");
+    }else{
+      syncEnabled = false;
+      lastSyncedJSON = null;
+      authBtn.textContent = "Sign in to sync";
+      setSyncStatus("Not signed in");
+    }
+  }
+
+  function pushToServer(){
+    if(!syncEnabled || !window.netlifyIdentity) return;
+    var user = window.netlifyIdentity.currentUser();
+    if(!user) return;
+    var json = JSON.stringify(state);
+    if(json === lastSyncedJSON || syncInFlight) return;
+    syncInFlight = true;
+    setSyncStatus("Syncing\u2026");
+    user.jwt().then(function(token){
+      return fetch(SYNC_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+        body: JSON.stringify({ data: state })
+      });
+    }).then(function(res){
+      syncInFlight = false;
+      if(res && res.ok){ lastSyncedJSON = json; setSyncStatus("Synced"); }
+      else{ setSyncStatus("Sync failed \u2014 will retry"); }
+    }).catch(function(e){
+      syncInFlight = false;
+      console.error("sync push failed", e);
+      setSyncStatus("Sync failed \u2014 will retry");
+    });
+  }
+
+  function pullFromServer(promptFirst){
+    if(!window.netlifyIdentity) return;
+    var user = window.netlifyIdentity.currentUser();
+    if(!user) return;
+    setSyncStatus("Checking cloud data\u2026");
+    user.jwt().then(function(token){
+      return fetch(SYNC_ENDPOINT, { headers: { "Authorization": "Bearer " + token } });
+    }).then(function(res){ return res.json(); }).then(function(result){
+      if(!result || !result.data){ setSyncStatus("Synced"); return; }
+      var proceed = true;
+      if(promptFirst){
+        proceed = confirm("Load your saved data from the cloud? This will replace what's currently shown in this browser on this device.");
+      }
+      if(proceed){
+        state = hydrateState(result.data);
+        lastSyncedJSON = JSON.stringify(state);
+        try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+        renderMain();
+      }
+      setSyncStatus("Synced");
+    }).catch(function(e){
+      console.error("sync pull failed", e);
+      setSyncStatus("Could not reach cloud data");
+    });
+  }
+
+  if(window.netlifyIdentity){
+    window.netlifyIdentity.on("init", function(user){
+      updateAuthUI(user);
+      if(user) pullFromServer(true);
+    });
+    window.netlifyIdentity.on("login", function(user){
+      updateAuthUI(user);
+      window.netlifyIdentity.close();
+      pullFromServer(true);
+    });
+    window.netlifyIdentity.on("logout", function(){
+      updateAuthUI(null);
+    });
+    window.netlifyIdentity.init();
+  }
+
+  document.getElementById("authBtn").addEventListener("click", function(){
+    if(!window.netlifyIdentity) return;
+    var user = window.netlifyIdentity.currentUser();
+    if(user) window.netlifyIdentity.logout();
+    else window.netlifyIdentity.open("login");
+  });
 
   buildTabs();
   renderMain();
