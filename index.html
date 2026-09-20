@@ -317,12 +317,15 @@
 
   var DOMAIN_DEFS = [
     { key:"professional", name:"Professional", subtitle:"Career & craft", accent:"#5B8DEF", gem:"Sapphire",
-      subs:[ {name:"Professional Profile", url:""}, {name:"Skills & Competencies", url:""}, {name:"Career Strategy", url:""} ] },
-    { key:"mental", name:"Mental Life", subtitle:"Mind & inner world", accent:"#D9D3E6", gem:"Pearl",
-      subs:[ {name:"Journaling", url:""}, {name:"Mindfulness Practice", url:""}, {name:"Reflection Notes", url:""} ] },
-    { key:"health", name:"Health", subtitle:"Body & recovery", accent:"#E85D75", gem:"Ruby",
-      subs:[ {name:"Health Report Upload", url:""}, {name:"Key Findings", url:""}, {name:"Abnormal Values", url:""}, {name:"Borderline Values", url:""}, {name:"Doctor Questions", url:""}, {name:"Lifestyle Actions", url:""}, {name:"Follow-up Date", url:""}, {name:"Next Test Date", url:""} ] }
+      subs:[ {name:"Professional Profile", url:""}, {name:"Skills & Competencies", url:""}, {name:"Career Strategy", url:""} ] }
   ];
+
+  var MEDICAL_ACCENT = "#E85D75";
+  var MEDICAL_GEM = "Ruby";
+  var MEDICAL_ENDPOINT = "/.netlify/functions/medical-reports";
+  var MEDICAL_MAX_BYTES = 4 * 1024 * 1024;
+  var MEDICAL_ALLOWED_MIME = ["application/pdf", "image/jpeg", "image/png"];
+  var medicalReportsListContainer = null;
 
   var GOALS_ACCENT = "#B98CE8";
   var GOALS_GEM = "Amethyst";
@@ -344,7 +347,6 @@
     {key:"investments", label:"Investments"},
     {key:"professional", label:"Professional"},
     {key:"dreams", label:"Dreams & Goals"},
-    {key:"mental", label:"Mental Life"},
     {key:"health", label:"Health"},
     {key:"review", label:"Review Log"}
   ];
@@ -943,6 +945,7 @@
     if(key === "finance") return FINANCE_ACCENT;
     if(key === "investments") return INVESTMENTS_ACCENT;
     if(key === "dreams") return GOALS_ACCENT;
+    if(key === "health") return MEDICAL_ACCENT;
     var def = domainDef(key);
     return def ? def.accent : GOLD;
   }
@@ -979,6 +982,7 @@
     else if(activeTab === "finance") buildFinance(view);
     else if(activeTab === "investments") buildInvestments(view);
     else if(activeTab === "dreams") buildGoals(view);
+    else if(activeTab === "health") buildMedicalReports(view);
     else buildDomain(view, activeTab);
   }
 
@@ -1055,6 +1059,19 @@
       '<p class="preview">' + (state.goals.length ? (state.goals.length + " goal" + (state.goals.length === 1 ? "" : "s") + " tracked") : "No goals yet") + '</p>';
     goalsTile.addEventListener("click", function(){ setActiveTab("dreams"); });
     tiles.appendChild(goalsTile);
+
+    var medicalTile = document.createElement("div");
+    medicalTile.className = "tile";
+    var medicalSignedIn = window.netlifyIdentity && window.netlifyIdentity.currentUser();
+    var medicalChip = medicalSignedIn ? '<span class="status-chip">private</span>' : '<span class="status-chip">sign in required</span>';
+    medicalTile.innerHTML =
+      '<div style="position:absolute;top:0;left:0;right:0;height:3px;background:' + MEDICAL_ACCENT + ';"></div>' +
+      medicalChip +
+      '<h3>Health</h3>' +
+      '<p class="tsub">Medical Report Tracker &middot; ' + MEDICAL_GEM + '</p>' +
+      '<p class="preview">' + (medicalSignedIn ? "Your report library" : "Sign in to sync to use this") + '</p>';
+    medicalTile.addEventListener("click", function(){ setActiveTab("health"); });
+    tiles.appendChild(medicalTile);
 
     DOMAIN_DEFS.forEach(function(def){
       var d = state.domains[def.key];
@@ -3275,6 +3292,226 @@
       summary.appendChild(card);
     });
     container.appendChild(summary);
+  }
+
+  /* ---------------- medical report tracker (health tab, phase 1) ---------------- */
+
+  function medicalFetchOpts(token, extra){
+    var opts = { headers: { "Authorization": "Bearer " + token } };
+    if(extra) Object.keys(extra).forEach(function(k){ opts[k] = extra[k]; });
+    return opts;
+  }
+
+  function refreshMedicalReportsList(){
+    if(medicalReportsListContainer) renderMedicalReportsListInto(medicalReportsListContainer);
+  }
+
+  function medicalReportRowHtml(r){
+    return "<td>" + (r.report_date ? escapeHtml(r.report_date) : "\u2014") + "</td>" +
+           "<td>" + escapeHtml(r.filename) + "</td>" +
+           "<td>" + new Date(r.uploaded_at).toLocaleDateString("en-IN") + "</td>";
+  }
+
+  function fetchMedicalReportBlob(reportId){
+    var user = window.netlifyIdentity.currentUser();
+    return user.jwt().then(function(token){
+      return fetch(MEDICAL_ENDPOINT + "?id=" + encodeURIComponent(reportId) + "&action=file", medicalFetchOpts(token));
+    }).then(function(res){
+      if(!res.ok) throw new Error("fetch failed");
+      return res.blob();
+    });
+  }
+
+  function viewMedicalReport(reportId){
+    fetchMedicalReportBlob(reportId).then(function(blob){
+      var url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
+    }).catch(function(){ alert("Could not open this report. Try again."); });
+  }
+
+  function downloadMedicalReport(reportId, filename){
+    fetchMedicalReportBlob(reportId).then(function(blob){
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
+    }).catch(function(){ alert("Could not download this report. Try again."); });
+  }
+
+  function deleteMedicalReport(reportId){
+    if(!confirm("Delete this report? This can't be undone.")) return;
+    var user = window.netlifyIdentity.currentUser();
+    user.jwt().then(function(token){
+      return fetch(MEDICAL_ENDPOINT + "?id=" + encodeURIComponent(reportId), medicalFetchOpts(token, { method: "DELETE" }));
+    }).then(function(res){
+      if(!res.ok) throw new Error("delete failed");
+      refreshMedicalReportsList();
+    }).catch(function(){ alert("Could not delete this report. Try again."); });
+  }
+
+  function uploadMedicalReport(file, reportDate, statusEl, uploadBtn){
+    if(MEDICAL_ALLOWED_MIME.indexOf(file.type) === -1){
+      alert("Only PDF, JPG, and PNG files are allowed.");
+      return;
+    }
+    if(file.size > MEDICAL_MAX_BYTES){
+      alert("This file is too large \u2014 please keep reports under 4MB for now.");
+      return;
+    }
+    uploadBtn.disabled = true;
+    if(statusEl) statusEl.textContent = "Uploading\u2026";
+    var reader = new FileReader();
+    reader.onload = function(){
+      var base64 = reader.result.split(",")[1];
+      var user = window.netlifyIdentity.currentUser();
+      user.jwt().then(function(token){
+        return fetch(MEDICAL_ENDPOINT, medicalFetchOpts(token, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+          body: JSON.stringify({ filename: file.name, mimeType: file.type, reportDate: reportDate || null, fileBase64: base64 })
+        }));
+      }).then(function(res){ return res.json().then(function(body){ return { res:res, body:body }; }); }).then(function(r){
+        uploadBtn.disabled = false;
+        if(statusEl) statusEl.textContent = "";
+        if(!r.res.ok || (r.body && r.body.error)){
+          alert((r.body && r.body.error) || "Upload failed. Try again.");
+          return;
+        }
+        refreshMedicalReportsList();
+      }).catch(function(e){
+        uploadBtn.disabled = false;
+        if(statusEl) statusEl.textContent = "";
+        console.error("report upload failed", e);
+        alert("Upload failed. Try again.");
+      });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function renderMedicalReportsListInto(container){
+    medicalReportsListContainer = container;
+    container.innerHTML = '<p class="empty">Loading\u2026</p>';
+    var user = window.netlifyIdentity.currentUser();
+    if(!user){ container.innerHTML = '<p class="empty">Not signed in.</p>'; return; }
+    user.jwt().then(function(token){
+      return fetch(MEDICAL_ENDPOINT, medicalFetchOpts(token));
+    }).then(function(res){ return res.json(); }).then(function(result){
+      container.innerHTML = "";
+      var reports = (result && result.reports) || [];
+      if(!reports.length){
+        container.innerHTML = '<p class="empty">No reports uploaded yet.</p>';
+        return;
+      }
+      var tableWrap = document.createElement("div");
+      tableWrap.className = "fin-table-wrap";
+      var table = document.createElement("table");
+      table.className = "fin-table";
+      table.innerHTML = "<thead><tr><th>Report Date</th><th>Filename</th><th>Uploaded</th><th></th><th></th><th></th></tr></thead>";
+      var tbody = document.createElement("tbody");
+      reports.forEach(function(r){
+        var tr = document.createElement("tr");
+        tr.className = "fin-row";
+        tr.innerHTML = medicalReportRowHtml(r);
+
+        var viewTd = document.createElement("td");
+        var viewBtn = document.createElement("button");
+        viewBtn.className = "fin-edit-btn"; viewBtn.textContent = "View";
+        viewBtn.addEventListener("click", function(){ viewMedicalReport(r.id); });
+        viewTd.appendChild(viewBtn); tr.appendChild(viewTd);
+
+        var dlTd = document.createElement("td");
+        var dlBtn = document.createElement("button");
+        dlBtn.className = "fin-edit-btn"; dlBtn.textContent = "Download";
+        dlBtn.addEventListener("click", function(){ downloadMedicalReport(r.id, r.filename); });
+        dlTd.appendChild(dlBtn); tr.appendChild(dlTd);
+
+        var delTd = document.createElement("td");
+        var delBtn = document.createElement("button");
+        delBtn.className = "s-remove"; delBtn.style.fontSize = "16px"; delBtn.textContent = "\u00d7";
+        delBtn.title = "Delete";
+        delBtn.addEventListener("click", function(){ deleteMedicalReport(r.id); });
+        delTd.appendChild(delBtn); tr.appendChild(delTd);
+
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      tableWrap.appendChild(table);
+      container.appendChild(tableWrap);
+    }).catch(function(e){
+      console.error("report list failed", e);
+      container.innerHTML = '<p class="empty">Could not load your reports. Try refreshing the page.</p>';
+    });
+  }
+
+  function buildMedicalReports(view){
+    view.innerHTML =
+      '<p class="focus-eyebrow">HEALTH &middot; ' + MEDICAL_GEM.toUpperCase() + '</p>' +
+      '<h1 class="focus-title" style="font-size:36px;">Medical Report Tracker</h1>' +
+      '<p class="hero-loop" style="max-width:640px;">Phase 1: a private, per-account library for your reports \u2014 upload, view, download, delete. ' +
+      'Reading test results out of these reports, and highlighting anything out of range, comes in a later phase \u2014 only after you\u2019ve seen and approved exactly how that works. Nothing here is used to make any health assessment.</p>';
+
+    var signedIn = window.netlifyIdentity && window.netlifyIdentity.currentUser();
+    if(!signedIn){
+      var gate = document.createElement("p");
+      gate.className = "empty";
+      gate.style.marginTop = "20px";
+      gate.textContent = "Sign in to sync (top right) to use the Medical Report Tracker \u2014 your reports are stored privately in your account and require you to be signed in.";
+      view.appendChild(gate);
+      return;
+    }
+
+    var uploadSection = document.createElement("div");
+    uploadSection.className = "fin-section";
+    uploadSection.style.marginTop = "10px";
+    uploadSection.innerHTML = '<h2 class="sec-title">Upload a report</h2>';
+
+    var uploadRow = document.createElement("div");
+    uploadRow.className = "fin-controls";
+
+    var fileCtl = document.createElement("div");
+    fileCtl.className = "fin-ctl";
+    fileCtl.innerHTML = "<label>File &mdash; PDF, JPG, or PNG, up to 4MB</label>";
+    var fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = ".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png";
+    fileCtl.appendChild(fileInput);
+    uploadRow.appendChild(fileCtl);
+
+    var dateCtl = document.createElement("div");
+    dateCtl.className = "fin-ctl";
+    dateCtl.innerHTML = "<label>Report date (optional)</label>";
+    var dateInput = document.createElement("input");
+    dateInput.type = "date";
+    dateInput.className = "fin-select";
+    dateCtl.appendChild(dateInput);
+    uploadRow.appendChild(dateCtl);
+
+    var uploadBtn = document.createElement("button");
+    uploadBtn.className = "log-btn";
+    uploadBtn.style.alignSelf = "flex-end";
+    uploadBtn.textContent = "Upload";
+    var statusSpan = document.createElement("span");
+    statusSpan.style.cssText = "align-self:flex-end;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--faint);padding-bottom:11px;";
+    uploadBtn.addEventListener("click", function(){
+      var file = fileInput.files[0];
+      if(!file){ alert("Choose a file first."); return; }
+      uploadMedicalReport(file, dateInput.value, statusSpan, uploadBtn);
+    });
+    uploadRow.appendChild(uploadBtn);
+    uploadRow.appendChild(statusSpan);
+    uploadSection.appendChild(uploadRow);
+    view.appendChild(uploadSection);
+
+    var listSection = document.createElement("div");
+    listSection.className = "fin-section";
+    listSection.innerHTML = '<h2 class="sec-title">Your reports</h2>';
+    var listContainer = document.createElement("div");
+    listSection.appendChild(listContainer);
+    view.appendChild(listSection);
+
+    renderMedicalReportsListInto(listContainer);
   }
 
   function buildDomain(view, key){
