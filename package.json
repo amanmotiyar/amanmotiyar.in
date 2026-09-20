@@ -3,6 +3,7 @@
   "private": true,
   "description": "Aman Multi Level Growth tracker, with Netlify Identity + Netlify DB sync",
   "dependencies": {
-    "@netlify/database": "latest"
+    "@netlify/database": "latest",
+    "@netlify/blobs": "latest"
   }
 }
