@@ -1,0 +1,6 @@
+{
+  "name": "amanmotiyar-life-tracker",
+  "private": true,
+  "description": "Aman Multi Level Growth tracker, with Netlify Identity + Netlify DB sync",
+  "dependencies": {}
+}
