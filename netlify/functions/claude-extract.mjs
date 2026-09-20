@@ -1,35 +1,55 @@
-// Modern-format Netlify Function (note the `export default` + Request/Response
-// shape below, instead of exports.handler) -- this is the format that
-// actually gets AI Gateway credentials auto-injected in this project;
-// classic exports.handler functions here do not (confirmed via diagnostic
-// logging: ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, NETLIFY_AI_GATEWAY_KEY and
-// NETLIFY_AI_GATEWAY_BASE_URL were all absent there).
+// Modern-format Netlify Function, now run as a BACKGROUND function
+// (see the `config` export below): a full extraction on a dense multi-page
+// report genuinely took 44-48 seconds in testing, which is well past what a
+// normal synchronous function can wait for. Background functions get up to
+// 15 minutes and respond immediately, so extract-report.js starts a job here
+// and polls for the result instead of waiting on one long request.
 //
-// This function does NO identity/auth checking of its own -- extract-report.js
-// (a classic function) does all of that first, then calls this one internally
-// as a plain proxy to Claude. Because every Netlify Function is a public URL,
-// this file checks a shared secret header so only that internal call can ever
-// reach it -- without this check, anyone could call this endpoint directly
-// and spend this account's AI Gateway credits.
+// No identity/auth checking of its own -- extract-report.js (a classic
+// function) does all of that before ever calling this one, and this file is
+// gated by a shared secret header so nothing else can trigger it and spend
+// this account's AI Gateway credits.
 
 import Anthropic from "@anthropic-ai/sdk";
+import { getStore } from "@netlify/blobs";
+
+export const config = { background: true };
+
+function parseExtractionResponse(text) {
+  var raw = String(text).trim();
+  try { return validateTests(JSON.parse(raw)); } catch (e) {}
+  var fenced = raw.replace(/^[\s\S]*?```(?:json)?\s*/i, "").replace(/```[\s\S]*$/, "").trim();
+  try { return validateTests(JSON.parse(fenced)); } catch (e) {}
+  var first = raw.indexOf("{");
+  var last = raw.lastIndexOf("}");
+  if (first !== -1 && last !== -1 && last > first) {
+    try { return validateTests(JSON.parse(raw.slice(first, last + 1))); } catch (e) {}
+  }
+  throw new Error("Could not parse extraction response");
+}
+function validateTests(parsed) {
+  if (!parsed || !Array.isArray(parsed.tests)) throw new Error("Unexpected shape");
+  return parsed.tests;
+}
 
 export default async (req) => {
   const secret = req.headers.get("x-internal-secret");
   const expected = process.env.INTERNAL_BRIDGE_SECRET;
+  const jobsStore = getStore({ name: "medical-reports-extraction-jobs" });
+
   if (!secret || !expected || secret !== expected) {
-    console.error("claude-extract: secret mismatch -- has env var:", Boolean(expected), "env var length:", expected ? expected.length : 0, "received header:", Boolean(secret), "header length:", secret ? secret.length : 0);
-    return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: { "Content-Type": "application/json" } });
+    console.error("claude-extract: secret mismatch, ignoring request");
+    return;
   }
 
   let body;
   try {
     body = await req.json();
   } catch (e) {
-    return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400, headers: { "Content-Type": "application/json" } });
+    return;
   }
-  if (!body || !body.base64 || !body.mimeType || !body.prompt) {
-    return new Response(JSON.stringify({ error: "Missing fields" }), { status: 400, headers: { "Content-Type": "application/json" } });
+  if (!body || !body.jobId || !body.base64 || !body.mimeType || !body.prompt) {
+    return;
   }
 
   const contentBlock = body.mimeType === "application/pdf"
@@ -43,9 +63,20 @@ export default async (req) => {
       max_tokens: 8192,
       messages: [{ role: "user", content: [contentBlock, { type: "text", text: body.prompt }] }]
     });
-    return new Response(JSON.stringify({ content: message.content }), { status: 200, headers: { "Content-Type": "application/json" } });
+    const textBlock = (message.content || []).find(function (b) { return b.type === "text"; });
+    if (!textBlock) {
+      throw new Error("No text in model response");
+    }
+    const tests = parseExtractionResponse(textBlock.text);
+    await jobsStore.setJSON(body.jobId, {
+      status: "done", tests: tests, userId: body.userId,
+      finishedAt: new Date().toISOString()
+    });
   } catch (e) {
-    console.error("claude-extract bridge call failed:", e && e.message);
-    return new Response(JSON.stringify({ error: "Model call failed" }), { status: 502, headers: { "Content-Type": "application/json" } });
+    console.error("claude-extract background job failed:", e && e.message);
+    await jobsStore.setJSON(body.jobId, {
+      status: "error", error: "Extraction failed. Try again.", userId: body.userId,
+      finishedAt: new Date().toISOString()
+    });
   }
 };
