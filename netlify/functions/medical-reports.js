@@ -1,5 +1,5 @@
 const crypto = require("crypto");
-const { getDatabase } = require("@netlify/database");
+const { getDatabase, getConnectionString } = require("@netlify/database");
 const { getStore, connectLambda } = require("@netlify/blobs");
 
 // Kept deliberately small: classic Netlify Functions cap request/response
@@ -17,7 +17,10 @@ exports.handler = async (event, context) => {
   }
   const userId = user.sub;
 
-  const db = getDatabase();
+  // Classic exports.handler functions run in "Lambda compatibility mode" --
+  // the one place Netlify Database can't auto-detect its connection, so it
+  // has to be passed in explicitly here.
+  const db = getDatabase({ connectionString: getConnectionString() });
   // "strong" consistency: a report you just uploaded must show up in your
   // very next list/view call, not eventually.
   const store = getStore({ name: "medical-reports", consistency: "strong" });
