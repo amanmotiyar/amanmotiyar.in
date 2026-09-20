@@ -118,7 +118,7 @@ exports.handler = async (event, context) => {
       // present in this project's classic functions -- same pattern seen
       // elsewhere tonight -- so this is hardcoded to the site's real, known
       // address instead of depending on it.
-      const bridgeUrl = "https://amanmotiyar.in/.netlify/functions/claude-extract";
+      const bridgeUrl = "https://amanmotiyar.in/.netlify/functions/claude-extract-background";
       await fetch(bridgeUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_BRIDGE_SECRET || "" },
