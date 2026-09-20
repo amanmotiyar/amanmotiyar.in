@@ -40,7 +40,7 @@ export default async (req) => {
     const anthropic = new Anthropic();
     const message = await anthropic.messages.create({
       model: "claude-sonnet-5",
-      max_tokens: 4096,
+      max_tokens: 8192,
       messages: [{ role: "user", content: [contentBlock, { type: "text", text: body.prompt }] }]
     });
     return new Response(JSON.stringify({ content: message.content }), { status: 200, headers: { "Content-Type": "application/json" } });
