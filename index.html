@@ -52,7 +52,7 @@
   .brand{ display:flex; align-items:baseline; gap:10px; }
   .brand .name{ font-family:'Cormorant Garamond', serif; font-weight:600; font-size:19px; color:var(--gold-2); }
   .brand .sub{ font-family:'JetBrains Mono', monospace; font-size:9.5px; letter-spacing:0.08em; color:var(--faint); }
-  .topright{ display:flex; align-items:center; gap:12px; }
+  .topright{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   .clock{ font-family:'JetBrains Mono', monospace; font-size:12px; color:var(--muted); }
   .util-btn{
     background:transparent; border:1px solid var(--line); color:var(--gold-2);
@@ -192,7 +192,7 @@
 
   /* finance */
   .fin-header{ display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:18px; margin-bottom:28px; }
-  .fin-mode-toggle{ display:flex; gap:6px; margin-bottom:28px; }
+  .fin-mode-toggle{ display:flex; gap:6px; margin-bottom:28px; flex-wrap:wrap; }
   .fin-mode-toggle button{
     background:var(--bg-2); border:1px solid var(--line); color:var(--muted);
     border-radius:20px; padding:8px 16px; font-size:12px; cursor:pointer; transition:all .2s ease;
@@ -260,6 +260,29 @@
   @media (max-width:720px){
     .topbar, .tabs, .stage{ padding-left:20px; padding-right:20px; }
     .focus-title{ font-size:32px; }
+    .focus-split{ gap:28px; }
+    .dial-wrap{ width:190px; height:190px; }
+    .dial-wrap svg{ width:190px; height:190px; }
+    .sub-row{ flex-wrap:wrap; }
+    .sub-row .s-name, .sub-row .s-url{ flex:1 1 100%; }
+    .hero-title{ font-size:32px; }
+  }
+
+  @media (max-width:480px){
+    .topbar, .tabs, .stage{ padding-left:16px; padding-right:16px; }
+    .topbar{ padding-top:16px; padding-bottom:12px; }
+    .brand .sub{ display:none; }
+    .clock{ display:none; }
+    .util-btn{ padding:6px 11px; font-size:10.5px; }
+    .tabs{ gap:5px; padding-bottom:18px; }
+    .tab-btn{ padding:7px 13px; font-size:11px; }
+    .focus-title{ font-size:26px; margin-bottom:20px; }
+    .hero-title{ font-size:26px; }
+    .focus-split{ gap:20px; }
+    .dial-wrap{ width:170px; height:170px; }
+    .dial-wrap svg{ width:170px; height:170px; }
+    .fin-groups{ grid-template-columns:1fr; }
+    .fin-summary{ grid-template-columns:repeat(auto-fit, minmax(130px,1fr)); }
   }
 </style>
 </head>
@@ -273,6 +296,7 @@
       <span class="clock" id="clockLine">—</span>
       <span class="util-btn" id="syncStatus" style="cursor:default;">Not signed in</span>
       <button class="util-btn" id="authBtn">Sign in to sync</button>
+      <button class="util-btn" id="logoutAllBtn" style="display:none;">Log out everywhere</button>
       <button class="util-btn" id="exportBtn">Export</button>
       <button class="util-btn" id="importBtn">Import</button>
       <button class="util-btn" id="resetBtn">Reset</button>
@@ -3496,11 +3520,48 @@
   /* ---------------- cloud sync (Netlify Identity + Netlify DB) ---------------- */
 
   var SYNC_ENDPOINT = "/.netlify/functions/sync-data";
+  // Captured once, immediately, before the Identity widget has a chance to process
+  // and clear the URL hash. A recovery/invite/confirmation link lands here with a
+  // token in the hash; GoTrue establishes a session for it and fires the same
+  // "login" event as a normal login -- if we don't know this was a recovery link,
+  // we'd wrongly auto-close the widget's "set a new password" screen below.
+  var arrivedViaRecoveryLink = /recovery_token=|invite_token=|confirmation_token=|email_change_token=/.test(window.location.hash || "");
   var syncEnabled = false;
   var lastSyncedJSON = null;
   var lastKnownAuthId = null;
   var lastKnownServerUpdatedAt = null;
   var syncInFlight = false;
+  var LOGIN_TS_KEY = "aman-mlg-login-ts";
+
+  function recordLoginTimestamp(){
+    try{ if(!localStorage.getItem(LOGIN_TS_KEY)) localStorage.setItem(LOGIN_TS_KEY, new Date().toISOString()); }catch(e){}
+  }
+  function clearLoginTimestamp(){ try{ localStorage.removeItem(LOGIN_TS_KEY); }catch(e){} }
+  function getLoginTimestamp(){ try{ return localStorage.getItem(LOGIN_TS_KEY); }catch(e){ return null; } }
+
+  // Called with whatever forceLogoutAt the server last reported. If it's newer
+  // than when THIS device logged in, someone (possibly this same device, from
+  // another tab) asked every device to sign out -- so this one does too.
+  function handleForceLogoutCheck(forceLogoutAt){
+    if(!forceLogoutAt || !syncEnabled) return;
+    var loginTs = getLoginTimestamp();
+    if(!loginTs) return;
+    if(new Date(forceLogoutAt).getTime() > new Date(loginTs).getTime()){
+      setSyncStatus("Signed out (from another device)");
+      window.netlifyIdentity.logout();
+    }
+  }
+
+  function checkRemoteFlags(){
+    if(!window.netlifyIdentity) return;
+    var user = window.netlifyIdentity.currentUser();
+    if(!user) return;
+    user.jwt().then(function(token){
+      return fetch(SYNC_ENDPOINT, { headers: { "Authorization": "Bearer " + token } });
+    }).then(function(res){ return res.json(); }).then(function(result){
+      if(result) handleForceLogoutCheck(result.forceLogoutAt);
+    }).catch(function(){});
+  }
 
   function setSyncStatus(text){
     var el = document.getElementById("syncStatus");
@@ -3509,14 +3570,17 @@
 
   function updateAuthUI(user){
     var authBtn = document.getElementById("authBtn");
+    var logoutAllBtn = document.getElementById("logoutAllBtn");
     if(user){
       syncEnabled = true;
       authBtn.textContent = "Sign out (" + user.email + ")";
+      if(logoutAllBtn) logoutAllBtn.style.display = "";
       setSyncStatus("Synced");
     }else{
       syncEnabled = false;
       lastSyncedJSON = null;
       authBtn.textContent = "Sign in to sync";
+      if(logoutAllBtn) logoutAllBtn.style.display = "none";
       setSyncStatus("Not signed in");
     }
   }
@@ -3554,6 +3618,7 @@
       // synced it? If so, don't silently clobber whatever changed elsewhere.
       return fetch(SYNC_ENDPOINT, { headers: { "Authorization": "Bearer " + token } });
     }).then(function(res){ return res.json(); }).then(function(check){
+      if(check) handleForceLogoutCheck(check.forceLogoutAt);
       var remoteUpdatedAt = check && check.updatedAt;
       if(remoteUpdatedAt && lastKnownServerUpdatedAt && remoteUpdatedAt !== lastKnownServerUpdatedAt){
         var keepThisDevice = confirm(
@@ -3582,6 +3647,7 @@
     return user.jwt().then(function(token){
       return fetch(SYNC_ENDPOINT, { headers: { "Authorization": "Bearer " + token } });
     }).then(function(res){ return res.json(); }).then(function(result){
+      if(result) handleForceLogoutCheck(result.forceLogoutAt);
       if(!result || !result.data){ setSyncStatus("Synced"); return; }
       var proceed = true;
       if(promptFirst){
@@ -3605,16 +3671,20 @@
     window.netlifyIdentity.on("init", function(user){
       lastKnownAuthId = user ? user.id : null;
       updateAuthUI(user);
-      if(user) pullFromServer(true);
+      if(user){ recordLoginTimestamp(); pullFromServer(true); }
     });
     window.netlifyIdentity.on("login", function(user){
       lastKnownAuthId = user ? user.id : null;
+      recordLoginTimestamp();
       updateAuthUI(user);
-      window.netlifyIdentity.close();
+      if(!arrivedViaRecoveryLink){
+        window.netlifyIdentity.close();
+      }
       pullFromServer(true);
     });
     window.netlifyIdentity.on("logout", function(){
       lastKnownAuthId = null;
+      clearLoginTimestamp();
       updateAuthUI(null);
     });
     window.netlifyIdentity.init();
@@ -3632,6 +3702,14 @@
         if(user) pullFromServer(true);
       }
     });
+
+    // Catches "log out everywhere" even on a device that's just sitting open
+    // and idle -- checked periodically, and immediately whenever you switch
+    // back to this tab.
+    setInterval(checkRemoteFlags, 120000);
+    document.addEventListener("visibilitychange", function(){
+      if(!document.hidden) checkRemoteFlags();
+    });
   }
 
   document.getElementById("authBtn").addEventListener("click", function(){
@@ -3639,6 +3717,25 @@
     var user = window.netlifyIdentity.currentUser();
     if(user) window.netlifyIdentity.logout();
     else window.netlifyIdentity.open("login");
+  });
+
+  document.getElementById("logoutAllBtn").addEventListener("click", function(){
+    if(!window.netlifyIdentity) return;
+    var user = window.netlifyIdentity.currentUser();
+    if(!user) return;
+    if(!confirm("Sign out of this account on every device? Other signed-in devices will be signed out the next time they check in (usually within a couple of minutes, or immediately if in use).")) return;
+    user.jwt().then(function(token){
+      return fetch(SYNC_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+        body: JSON.stringify({ action: "force_logout_all" })
+      });
+    }).then(function(){
+      window.netlifyIdentity.logout();
+    }).catch(function(e){
+      console.error("logout-all failed", e);
+      alert("Could not reach the server -- this device wasn't signed out. Try again.");
+    });
   });
 
   buildTabs();
