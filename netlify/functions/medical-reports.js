@@ -21,8 +21,12 @@ exports.handler = async (event, context) => {
   }
   const userId = user.sub;
 
-  const fileStore = getStore({ name: "medical-reports", consistency: "strong" });
-  const indexStore = getStore({ name: "medical-reports-index", consistency: "strong" });
+  // "strong" consistency needs extra edge configuration not available in
+  // classic (Lambda-compat) functions -- default "eventual" consistency
+  // works fine here and just means a write can take up to ~60s to be
+  // visible to a read from a different request.
+  const fileStore = getStore({ name: "medical-reports" });
+  const indexStore = getStore({ name: "medical-reports-index" });
 
   async function getIndex() {
     const idx = await indexStore.get(userId, { type: "json" });
