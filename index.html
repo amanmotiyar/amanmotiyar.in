@@ -914,6 +914,13 @@
         snapshots: []
       },
       professional: { employers: [], achievements: [], goals: [], reviews: {} },
+      updateSchedules: {
+        finance: { enabled:false, intervalDays:30, lastTouchedAt:null },
+        investments: { enabled:false, intervalDays:30, lastTouchedAt:null },
+        professional: { enabled:false, intervalDays:30, lastTouchedAt:null },
+        dreams: { enabled:false, intervalDays:30, lastTouchedAt:null },
+        health: { enabled:false, intervalDays:30, lastTouchedAt:null }
+      },
       goals: []
     };
   }
@@ -947,6 +954,17 @@
       base.professional.achievements = Array.isArray(parsed.professional.achievements) ? parsed.professional.achievements : [];
       base.professional.goals = Array.isArray(parsed.professional.goals) ? parsed.professional.goals : [];
       base.professional.reviews = (parsed.professional.reviews && typeof parsed.professional.reviews === "object") ? parsed.professional.reviews : {};
+    }
+    if(parsed.updateSchedules && typeof parsed.updateSchedules === "object"){
+      Object.keys(base.updateSchedules).forEach(function(key){
+        if(parsed.updateSchedules[key]){
+          base.updateSchedules[key] = {
+            enabled: !!parsed.updateSchedules[key].enabled,
+            intervalDays: parseInt(parsed.updateSchedules[key].intervalDays, 10) || 30,
+            lastTouchedAt: parsed.updateSchedules[key].lastTouchedAt || null
+          };
+        }
+      });
     }
     base.goals = (Array.isArray(parsed.goals) ? parsed.goals : []).map(function(g){
       var out = {
@@ -997,7 +1015,18 @@
   var activeTab = "overview";
   var saveTimer = null;
 
+  var UPDATE_SCHEDULE_SECTIONS = [
+    { key:"finance", label:"Finance" },
+    { key:"investments", label:"Investments" },
+    { key:"professional", label:"Professional" },
+    { key:"dreams", label:"Dreams & Goals" },
+    { key:"health", label:"Health" }
+  ];
+
   function scheduleSave(){
+    if(state.updateSchedules && state.updateSchedules[activeTab]){
+      state.updateSchedules[activeTab].lastTouchedAt = new Date().toISOString();
+    }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(function(){
       try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); flagSaved(); pushToServer(); }
@@ -5049,78 +5078,192 @@
     return row;
   }
 
+  function isValidDateString(v){
+    if(!v) return true;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    var d = new Date(v + "T00:00:00");
+    return !isNaN(d.getTime());
+  }
+
+  // A pure, read-only scan over the current data -- never mutates anything.
+  // Because it's recomputed fresh every time the Review Log renders, a fixed
+  // problem simply stops appearing on the next scan (nothing to "remove"),
+  // and the same condition is only ever checked once per entry, so nothing
+  // can duplicate.
+  function scanForIssues(){
+    var issues = [];
+    var today = todayISO();
+
+    function addIssue(section, entry, problem, detail, openTab, openMode){
+      issues.push({ section:section, entry:entry, problem:problem, detail:detail, openTab:openTab, openMode:openMode });
+    }
+
+    state.professional.employers.forEach(function(emp){
+      var empName = emp.employerName || "(unnamed employer)";
+      if(emp.startDate && !isValidDateString(emp.startDate)) addIssue("Professional", empName, "Start date could not be read", String(emp.startDate), "professional", "timeline");
+      if(emp.endDate && !isValidDateString(emp.endDate)) addIssue("Professional", empName, "End date could not be read", String(emp.endDate), "professional", "timeline");
+      if(emp.startDate && emp.endDate && isValidDateString(emp.startDate) && isValidDateString(emp.endDate) && emp.endDate < emp.startDate){
+        addIssue("Professional", empName, "End date is before start date", emp.startDate + " \u2192 " + emp.endDate, "professional", "timeline");
+      }
+      emp.roles.forEach(function(role){
+        var roleLabel = empName + " \u2014 " + (role.jobTitle || "(untitled role)");
+        if(role.startDate && !isValidDateString(role.startDate)) addIssue("Professional", roleLabel, "Role start date could not be read", String(role.startDate), "professional", "timeline");
+        if(role.endDate && !isValidDateString(role.endDate)) addIssue("Professional", roleLabel, "Role end date could not be read", String(role.endDate), "professional", "timeline");
+        if(role.startDate && role.endDate && isValidDateString(role.startDate) && isValidDateString(role.endDate) && role.endDate < role.startDate){
+          addIssue("Professional", roleLabel, "Role end date is before role start date", role.startDate + " \u2192 " + role.endDate, "professional", "timeline");
+        }
+        if(role.startDate && emp.startDate && isValidDateString(role.startDate) && isValidDateString(emp.startDate) && role.startDate < emp.startDate){
+          addIssue("Professional", roleLabel, "Role starts before the employer's own start date", "Role: " + role.startDate + " \u00b7 Employer: " + emp.startDate, "professional", "timeline");
+        }
+        if(role.endDate && emp.endDate && isValidDateString(role.endDate) && isValidDateString(emp.endDate) && role.endDate > emp.endDate){
+          addIssue("Professional", roleLabel, "Role ends after the employer's own end date", "Role: " + role.endDate + " \u00b7 Employer: " + emp.endDate, "professional", "timeline");
+        }
+      });
+    });
+
+    state.professional.goals.forEach(function(g){
+      if(g.targetDate && isValidDateString(g.targetDate) && g.targetDate < today && g.status !== "Achieved" && g.status !== "On hold"){
+        addIssue("Professional", g.name || "(unnamed goal)", "Target date has passed and goal isn't marked Achieved", "Target: " + g.targetDate + " \u00b7 Status: " + g.status, "professional", "goals");
+      }
+    });
+
+    state.goals.forEach(function(g){
+      if(g.targetDate && isValidDateString(g.targetDate) && g.targetDate < today && g.status !== "Achieved" && g.status !== "On hold"){
+        addIssue("Dreams & Goals", g.name || "(unnamed dream)", "Target date has passed and dream isn't marked Achieved", "Target: " + g.targetDate + " \u00b7 Status: " + g.status, "dreams");
+      }
+      (g.fundingEntries || []).forEach(function(fe){
+        if(fe.date && !isValidDateString(fe.date)) addIssue("Dreams & Goals", g.name || "(unnamed dream)", "A funding entry's date could not be read", String(fe.date), "dreams");
+      });
+      (g.milestones || []).forEach(function(ms){
+        if(ms.targetDate && !isValidDateString(ms.targetDate)) addIssue("Dreams & Goals", g.name || "(unnamed dream)", "A milestone's target date could not be read", String(ms.targetDate), "dreams");
+      });
+      var hasMoney = goalCurrentAllocated(g) !== 0 || (parseFloat(g.plannedMonthlyContribution) || 0) !== 0;
+      if(hasMoney && (!g.estimatedAmount || parseFloat(g.estimatedAmount) === 0)){
+        addIssue("Dreams & Goals", g.name || "(unnamed dream)", "Estimated total cost is missing, so percent funded and required contribution can't be calculated", "Allocated: " + fmtINRz(goalCurrentAllocated(g)), "dreams");
+      }
+    });
+
+    state.investments.holdings.forEach(function(h){
+      if(h.asOfDate && !isValidDateString(h.asOfDate)) addIssue("Investments", h.name || "(unnamed holding)", "'As of' date could not be read", String(h.asOfDate), "investments");
+    });
+
+    UPDATE_SCHEDULE_SECTIONS.forEach(function(s){
+      var sched = state.updateSchedules[s.key];
+      if(!sched || !sched.enabled || !sched.lastTouchedAt) return;
+      var last = new Date(sched.lastTouchedAt);
+      if(isNaN(last.getTime())) return;
+      var daysSince = Math.floor((Date.now() - last.getTime()) / 86400000);
+      if(daysSince > sched.intervalDays){
+        addIssue(s.label, "(scheduled update)", "No update logged in " + daysSince + " days \u2014 you asked to be reminded every " + sched.intervalDays + " days", "Last touched " + formatMonthYear(sched.lastTouchedAt.slice(0,10)), s.key);
+      }
+    });
+
+    return issues;
+  }
+
   function buildReview(view){
     view.innerHTML =
-      '<h1 class="hero-title" style="font-size:32px;">Review log</h1>' +
-      '<p class="hero-loop">Log what changed and what it means \u2014 weekly, monthly, quarterly.</p>';
+      '<h1 class="hero-title" style="font-size:32px;">Updates &amp; Data Errors</h1>' +
+      '<p class="hero-loop">Automatic checks only \u2014 overdue updates and detectable data problems across your tracker. Not a place for notes or written reviews.</p>';
 
-    var composer = document.createElement("div");
-    composer.className = "composer";
-    var select = document.createElement("select");
-    ["Weekly","Monthly","Quarterly","Note"].forEach(function(c){ var o = document.createElement("option"); o.textContent = c; select.appendChild(o); });
-    var ta = document.createElement("textarea");
-    ta.rows = 2; ta.placeholder = "What did you notice? What's changing? What should shift next?";
-    ta.addEventListener("input", function(){ autosize(ta); });
-    var logBtn = document.createElement("button");
-    logBtn.className = "log-btn"; logBtn.textContent = "Log entry";
-    logBtn.addEventListener("click", function(){
-      var text = ta.value.trim();
-      if(!text) return;
-      state.reviews.push({ id:uid(), date:Date.now(), cadence:select.value, text:text });
-      scheduleSave(); renderMain();
-    });
-    composer.appendChild(select); composer.appendChild(ta); composer.appendChild(logBtn);
-    view.appendChild(composer);
+    var schedSection = document.createElement("div");
+    schedSection.className = "fin-section";
+    schedSection.innerHTML = '<h2 class="sec-title">Update reminders (optional)</h2>';
+    var schedIntro = document.createElement("p");
+    schedIntro.className = "empty";
+    schedIntro.style.marginBottom = "14px";
+    schedIntro.textContent = "Off by default for every section. Turn one on only if you want to be reminded when you haven't touched that section in a while.";
+    schedSection.appendChild(schedIntro);
 
-    var finReviewKeys = Object.keys(state.finance.monthlyReviews).filter(function(k){ return hasReviewContent(state.finance.monthlyReviews[k]); });
-    if(finReviewKeys.length){
-      var finReviewSection = document.createElement("div");
-      finReviewSection.style.marginBottom = "30px";
-      finReviewSection.innerHTML = '<h2 class="sec-title">Monthly Financial Reviews</h2>';
-      var sortedKeys = finReviewKeys.map(function(k){
-        var parts = k.split("|"); var cal = actualMonthToCalendar(parts[0], parts[1]);
-        return { key:k, fy:parts[0], mo:parts[1], year:cal.year, month:cal.month };
-      }).sort(function(a,b){ return ymCompare(b.year,b.month,a.year,a.month); });
-      sortedKeys.forEach(function(entry){
-        var r = state.finance.monthlyReviews[entry.key];
-        var preview = (r.whatWentDifferently || r.why || r.nextAction || "").trim();
-        var row = document.createElement("div");
-        row.className = "attn-row";
-        row.style.cursor = "pointer";
-        row.innerHTML =
-          '<span class="dot" style="background:' + FINANCE_ACCENT + '"></span>' +
-          '<span class="a-name">' + ymLabel(entry.year, entry.month) + '</span>' +
-          '<span class="a-text">' + escapeHtml(preview.length > 90 ? (preview.slice(0,90) + "\u2026") : preview) + ' &rarr;</span>';
-        row.addEventListener("click", function(){ goToMonthlyReview(entry.fy, entry.mo); });
-        finReviewSection.appendChild(row);
+    UPDATE_SCHEDULE_SECTIONS.forEach(function(s){
+      var sched = state.updateSchedules[s.key];
+      var row = document.createElement("div");
+      row.className = "fin-controls";
+      row.style.marginBottom = "10px";
+
+      var toggleCtl = document.createElement("label");
+      toggleCtl.style.cssText = "display:flex; align-items:center; gap:8px; font-size:13px; min-width:160px;";
+      var toggle = document.createElement("input");
+      toggle.type = "checkbox"; toggle.checked = !!sched.enabled;
+      toggle.addEventListener("change", function(){
+        sched.enabled = toggle.checked;
+        if(sched.enabled && !sched.lastTouchedAt) sched.lastTouchedAt = new Date().toISOString();
+        scheduleSave(); renderMain();
       });
-      view.appendChild(finReviewSection);
-    }
+      toggleCtl.appendChild(toggle);
+      toggleCtl.appendChild(document.createTextNode(s.label));
+      row.appendChild(toggleCtl);
 
-    if(!state.reviews.length){
-      var empty = document.createElement("p");
-      empty.className = "empty"; empty.textContent = "No entries yet. Log your first review above.";
-      view.appendChild(empty);
-    }else{
-      state.reviews.slice().reverse().forEach(function(r){
-        var item = document.createElement("div");
-        item.className = "r-item";
-        var dt = new Date(r.date);
-        item.innerHTML =
-          '<div class="r-meta">' + dt.toLocaleDateString(undefined,{day:"numeric",month:"short"}) + '<br>' +
-          dt.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"}) +
-          '<span class="tag">' + r.cadence + '</span></div>' +
-          '<div class="r-text">' + escapeHtml(r.text) + '</div>';
-        var del = document.createElement("button");
-        del.className = "r-del"; del.textContent = "\u00d7";
-        del.addEventListener("click", function(){
-          state.reviews = state.reviews.filter(function(x){ return x.id !== r.id; });
+      if(sched.enabled){
+        var intervalCtl = document.createElement("div"); intervalCtl.className = "fin-ctl";
+        intervalCtl.innerHTML = "<label>Remind me every</label>";
+        var intervalSel = document.createElement("select");
+        intervalSel.className = "fin-select";
+        [[7,"7 days"],[14,"14 days"],[30,"30 days"],[90,"3 months"],[180,"6 months"]].forEach(function(opt){
+          var o = document.createElement("option"); o.value = opt[0]; o.textContent = opt[1];
+          if(sched.intervalDays === opt[0]) o.selected = true;
+          intervalSel.appendChild(o);
+        });
+        intervalSel.addEventListener("change", function(){
+          sched.intervalDays = parseInt(intervalSel.value, 10);
           scheduleSave(); renderMain();
         });
-        item.appendChild(del);
-        view.appendChild(item);
+        intervalCtl.appendChild(intervalSel);
+        row.appendChild(intervalCtl);
+
+        if(sched.lastTouchedAt){
+          var lastText = document.createElement("span");
+          lastText.style.cssText = "font-size:12px; color:var(--faint); align-self:flex-end; padding-bottom:8px;";
+          lastText.textContent = "Last touched " + formatMonthYear(sched.lastTouchedAt.slice(0,10));
+          row.appendChild(lastText);
+        }
+      }
+      schedSection.appendChild(row);
+    });
+    view.appendChild(schedSection);
+
+    var issues = scanForIssues();
+    var issuesSection = document.createElement("div");
+    issuesSection.className = "fin-section";
+    issuesSection.innerHTML = '<h2 class="sec-title">Issues</h2>';
+
+    if(!issues.length){
+      var allClear = document.createElement("p");
+      allClear.className = "empty";
+      allClear.style.cssText = "font-size:15px; color:var(--ink);";
+      allClear.textContent = "All checks passed. Nothing needs attention.";
+      issuesSection.appendChild(allClear);
+    }else{
+      issues.forEach(function(issue){
+        var row = document.createElement("div");
+        row.className = "attn-row";
+        row.style.cssText = "align-items:flex-start; cursor:default;";
+        var accent = issue.section === "Finance" ? FINANCE_ACCENT
+          : issue.section === "Investments" ? INVESTMENTS_ACCENT
+          : issue.section === "Professional" ? PROFESSIONAL_ACCENT
+          : issue.section === "Dreams & Goals" ? GOALS_ACCENT
+          : issue.section === "Health" ? MEDICAL_ACCENT : GOLD;
+        var textWrap = document.createElement("div");
+        textWrap.style.flex = "1";
+        textWrap.innerHTML =
+          '<span class="dot" style="background:' + accent + '; position:relative; top:-1px;"></span> ' +
+          '<strong>' + escapeHtml(issue.section) + '</strong> \u00b7 ' + escapeHtml(issue.entry) + '<br>' +
+          '<span style="color:var(--ink);">' + escapeHtml(issue.problem) + '</span><br>' +
+          '<span style="font-size:12px; color:var(--faint);">' + escapeHtml(issue.detail) + '</span>';
+        row.appendChild(textWrap);
+
+        var openBtn = document.createElement("button");
+        openBtn.className = "fin-edit-btn"; openBtn.textContent = "Open"; openBtn.style.flexShrink = "0";
+        openBtn.addEventListener("click", function(){
+          if(issue.openMode) professionalMode = issue.openMode;
+          setActiveTab(issue.openTab);
+        });
+        row.appendChild(openBtn);
+
+        issuesSection.appendChild(row);
       });
     }
+    view.appendChild(issuesSection);
   }
 
   /* ---------------- clock ---------------- */
