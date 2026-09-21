@@ -284,8 +284,46 @@
     .fin-groups{ grid-template-columns:1fr; }
     .fin-summary{ grid-template-columns:repeat(auto-fit, minmax(130px,1fr)); }
   }
+
+  .timeline-card{ border:1px solid var(--line); border-radius:12px; padding:20px 22px; }
+  .timeline-connector{ display:flex; flex-direction:column; align-items:center; padding:6px 0; }
+  .timeline-connector .t-line{ width:2px; height:18px; background:var(--line); }
+  .timeline-connector .t-arrow{
+    width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent;
+    border-top:7px solid var(--line); margin-top:-1px;
+  }
+  .timeline-summary{ font-family:'JetBrains Mono', monospace; font-size:12px; color:var(--faint); margin:-4px 0 16px; }
+  .timeline-undated-header{ font-size:10.5px; letter-spacing:0.06em; color:var(--faint); margin:26px 0 14px; font-family:'JetBrains Mono', monospace; }
+
+  .vtimeline{ position:relative; max-width:640px; margin:0 auto; padding:10px 0; }
+  .vtimeline::before{
+    content:""; position:absolute; left:50%; top:0; bottom:0; width:2px;
+    background:var(--line); transform:translateX(-50%);
+  }
+  .vtimeline-item{ position:relative; width:100%; display:flex; margin-bottom:36px; }
+  .vtimeline-item.left{ justify-content:flex-start; }
+  .vtimeline-item.right{ justify-content:flex-end; }
+  .vtimeline-card{
+    width:calc(50% - 34px); background:rgba(255,255,255,0.02); border:1px solid var(--line);
+    border-radius:12px; padding:14px 16px; position:relative;
+  }
+  .vtimeline-node{
+    position:absolute; left:50%; top:6px; width:14px; height:14px; border-radius:50%;
+    transform:translateX(-50%); border:3px solid var(--bg, #14101C); z-index:1;
+  }
+  .vtimeline-year{ font-family:'JetBrains Mono', monospace; font-size:10.5px; letter-spacing:0.06em; opacity:0.85; }
+  .vtimeline-role{ font-family:'Cormorant Garamond', serif; font-size:18px; margin:3px 0 2px; }
+  .vtimeline-employer{ font-size:12.5px; color:var(--faint); }
+
+  @media (max-width:640px){
+    .vtimeline::before{ left:7px; }
+    .vtimeline-item, .vtimeline-item.left, .vtimeline-item.right{ justify-content:flex-start; padding-left:26px; }
+    .vtimeline-card{ width:100%; }
+    .vtimeline-node{ left:7px; }
+  }
 </style>
 </head>
+
 <body>
 <div class="rule-gold"></div>
 <div class="aura"><div class="aura-layer on" id="aura"></div></div>
@@ -3869,7 +3907,7 @@
 
     var modeToggle = document.createElement("div");
     modeToggle.className = "fin-mode-toggle";
-    [["timeline","Employment Timeline"], ["achievements","Achievements & Impact"], ["goals","Career Goals"], ["review","Monthly Career Review"]].forEach(function(pair){
+    [["timeline","Employment Timeline"], ["visual","Timeline"], ["achievements","Achievements & Impact"], ["goals","Career Goals"], ["review","Monthly Career Review"]].forEach(function(pair){
       var btn = document.createElement("button");
       btn.type = "button"; btn.textContent = pair[1];
       if(professionalMode === pair[0]) btn.classList.add("on");
@@ -3885,26 +3923,100 @@
     if(professionalMode === "achievements") buildProfessionalAchievements(view);
     else if(professionalMode === "goals") buildProfessionalGoals(view);
     else if(professionalMode === "review") buildProfessionalReview(view);
+    else if(professionalMode === "visual") buildProfessionalVisualTimeline(view);
     else buildProfessionalTimeline(view);
   }
 
   /* -- 1. employment timeline -- */
 
+  function formatMonthYear(dateStr){
+    if(!dateStr) return "";
+    var d = new Date(dateStr + "T00:00:00");
+    if(isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+  }
+
+  function formatEmploymentDuration(startDate, endDate){
+    if(!startDate) return "";
+    var start = new Date(startDate + "T00:00:00");
+    if(isNaN(start.getTime())) return "";
+    var end = endDate ? new Date(endDate + "T00:00:00") : new Date();
+    var totalMonths = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+    if(end.getDate() < start.getDate()) totalMonths -= 1;
+    if(totalMonths < 0) totalMonths = 0;
+    var years = Math.floor(totalMonths / 12);
+    var months = totalMonths % 12;
+    var parts = [];
+    if(years > 0) parts.push(years + " yr" + (years === 1 ? "" : "s"));
+    if(months > 0 || parts.length === 0) parts.push(months + " mo" + (months === 1 ? "" : "s"));
+    return parts.join(" ");
+  }
+
+  // Display-only grouping/sorting -- never mutates state.professional.employers
+  // itself or any stored date. An employer with no start date is never guessed
+  // into a position on the sorted timeline; it goes in its own Undated group.
+  function sortedEmployersForTimeline(){
+    var dated = state.professional.employers.filter(function(e){ return !!e.startDate; });
+    var undated = state.professional.employers.filter(function(e){ return !e.startDate; });
+    dated = dated.slice().sort(function(a,b){ return a.startDate.localeCompare(b.startDate); });
+    return { dated: dated, undated: undated };
+  }
+
+  // Display-only role ordering within a card -- never mutates emp.roles itself.
+  function sortedRolesForDisplay(emp){
+    return emp.roles.slice().sort(function(a,b){
+      var as = a.startDate || "", bs = b.startDate || "";
+      if(as && bs) return as.localeCompare(bs);
+      if(as) return -1;
+      if(bs) return 1;
+      return 0;
+    });
+  }
+
   function buildProfessionalTimeline(view){
     var section = document.createElement("div");
     section.className = "fin-section";
-    section.innerHTML = '<h2 class="sec-title">Employers &amp; roles</h2>';
+    section.innerHTML = '<h2 class="sec-title">Employment timeline</h2>';
 
     if(!state.professional.employers.length){
       var empty = document.createElement("p");
       empty.className = "empty";
       empty.textContent = "No employers yet \u2014 add your first one below.";
       section.appendChild(empty);
-    }
+    }else{
+      var groups = sortedEmployersForTimeline();
 
-    state.professional.employers.forEach(function(emp){
-      section.appendChild(buildEmployerCard(emp));
-    });
+      if(groups.dated.length){
+        var timelineWrap = document.createElement("div");
+        groups.dated.forEach(function(emp, idx){
+          timelineWrap.appendChild(buildEmployerCard(emp));
+          if(idx < groups.dated.length - 1){
+            var connector = document.createElement("div");
+            connector.className = "timeline-connector";
+            connector.innerHTML = '<div class="t-line"></div><div class="t-arrow"></div>';
+            timelineWrap.appendChild(connector);
+          }
+        });
+        section.appendChild(timelineWrap);
+      }
+
+      if(groups.undated.length){
+        var undatedHeader = document.createElement("div");
+        undatedHeader.className = "timeline-undated-header";
+        undatedHeader.textContent = "UNDATED";
+        section.appendChild(undatedHeader);
+        var undatedWrap = document.createElement("div");
+        groups.undated.forEach(function(emp, idx){
+          undatedWrap.appendChild(buildEmployerCard(emp));
+          if(idx < groups.undated.length - 1){
+            var spacer = document.createElement("div");
+            spacer.style.height = "20px";
+            undatedWrap.appendChild(spacer);
+          }
+        });
+        section.appendChild(undatedWrap);
+      }
+    }
     view.appendChild(section);
 
     var addBtn = document.createElement("button");
@@ -3912,7 +4024,7 @@
     addBtn.style.marginTop = "14px";
     addBtn.textContent = "+ add employer";
     addBtn.addEventListener("click", function(){
-      state.professional.employers.push({ id: uid(), employerName: "", roles: [] });
+      state.professional.employers.push({ id: uid(), employerName: "", startDate: "", endDate: "", roles: [] });
       scheduleSave();
       renderMain();
     });
@@ -3921,10 +4033,10 @@
 
   function buildEmployerCard(emp){
     var card = document.createElement("div");
-    card.style.cssText = "border:1px solid var(--line); border-radius:12px; padding:20px 22px; margin-bottom:20px;";
+    card.className = "timeline-card";
 
     var headerRow = document.createElement("div");
-    headerRow.style.cssText = "display:flex; align-items:center; gap:12px; margin-bottom:16px;";
+    headerRow.style.cssText = "display:flex; align-items:center; gap:12px; margin-bottom:14px;";
     var nameInp = document.createElement("input");
     nameInp.type = "text"; nameInp.placeholder = "Employer name"; nameInp.value = emp.employerName || "";
     nameInp.style.cssText = "flex:1; background:transparent; border:none; border-bottom:1px solid var(--line); color:var(--ink); font-family:'Cormorant Garamond',serif; font-size:22px; padding:4px 2px;";
@@ -3941,6 +4053,53 @@
     headerRow.appendChild(rmEmpBtn);
     card.appendChild(headerRow);
 
+    var datesRow = document.createElement("div");
+    datesRow.className = "fin-controls";
+    datesRow.style.marginBottom = "6px";
+
+    var startCtl = document.createElement("div"); startCtl.className = "fin-ctl";
+    startCtl.innerHTML = "<label>Start date</label>";
+    var startInp = styledDateInput(emp.startDate);
+    startInp.addEventListener("change", function(){ emp.startDate = startInp.value; scheduleSave(); renderMain(); });
+    startCtl.appendChild(startInp);
+    datesRow.appendChild(startCtl);
+
+    var endCtl = document.createElement("div"); endCtl.className = "fin-ctl";
+    endCtl.innerHTML = "<label>End date</label>";
+    var endInp = styledDateInput(emp.endDate);
+    endInp.disabled = !emp.endDate;
+    endInp.addEventListener("change", function(){ emp.endDate = endInp.value; scheduleSave(); renderMain(); });
+    endCtl.appendChild(endInp);
+    var currentLabel = document.createElement("label");
+    currentLabel.style.cssText = "display:flex; align-items:center; gap:4px; font-size:10px; color:var(--faint); margin-top:4px;";
+    var currentCheck = document.createElement("input");
+    currentCheck.type = "checkbox"; currentCheck.checked = !emp.endDate;
+    currentCheck.addEventListener("change", function(){
+      if(currentCheck.checked){
+        emp.endDate = ""; endInp.value = ""; endInp.disabled = true;
+        scheduleSave(); renderMain();
+      }else{
+        // Just unlocking the field so a real end date can be typed -- nothing
+        // persisted yet, so no re-render (which would rebuild from the still-
+        // empty endDate and immediately re-disable this same field).
+        endInp.disabled = false;
+      }
+    });
+    currentLabel.appendChild(currentCheck);
+    currentLabel.appendChild(document.createTextNode("Current employer"));
+    endCtl.appendChild(currentLabel);
+    datesRow.appendChild(endCtl);
+    card.appendChild(datesRow);
+
+    if(emp.startDate){
+      var summary = document.createElement("p");
+      summary.className = "timeline-summary";
+      var endLabel = emp.endDate ? formatMonthYear(emp.endDate) : "Present";
+      var duration = formatEmploymentDuration(emp.startDate, emp.endDate);
+      summary.textContent = formatMonthYear(emp.startDate) + " \u2013 " + endLabel + (duration ? "  \u00b7  " + duration : "");
+      card.appendChild(summary);
+    }
+
     var tableWrap = document.createElement("div");
     tableWrap.className = "fin-table-wrap";
     var table = document.createElement("table");
@@ -3953,7 +4112,7 @@
       trEmpty.innerHTML = '<td colspan="6" class="empty" style="padding:10px 0;">No roles yet at this employer.</td>';
       tbody.appendChild(trEmpty);
     }
-    emp.roles.forEach(function(role){ tbody.appendChild(buildRoleRow(emp, role)); });
+    sortedRolesForDisplay(emp).forEach(function(role){ tbody.appendChild(buildRoleRow(emp, role)); });
     table.appendChild(tbody);
     tableWrap.appendChild(table);
     card.appendChild(tableWrap);
@@ -3989,13 +4148,13 @@
 
     var startCell = document.createElement("td");
     var startInp = styledDateInput(role.startDate);
-    startInp.addEventListener("change", function(){ role.startDate = startInp.value; scheduleSave(); });
+    startInp.addEventListener("change", function(){ role.startDate = startInp.value; scheduleSave(); renderMain(); });
     startCell.appendChild(startInp);
     row.appendChild(startCell);
 
     var endCell = document.createElement("td");
     var endInp = styledDateInput(role.endDate);
-    endInp.addEventListener("change", function(){ role.endDate = endInp.value; scheduleSave(); });
+    endInp.addEventListener("change", function(){ role.endDate = endInp.value; scheduleSave(); renderMain(); });
     endInp.disabled = !role.endDate;
     endCell.appendChild(endInp);
     var currentLabel = document.createElement("label");
@@ -4003,9 +4162,12 @@
     var currentCheck = document.createElement("input");
     currentCheck.type = "checkbox"; currentCheck.checked = !role.endDate;
     currentCheck.addEventListener("change", function(){
-      if(currentCheck.checked){ role.endDate = ""; endInp.value = ""; endInp.disabled = true; }
-      else{ endInp.disabled = false; }
-      scheduleSave();
+      if(currentCheck.checked){
+        role.endDate = ""; endInp.value = ""; endInp.disabled = true;
+        scheduleSave(); renderMain();
+      }else{
+        endInp.disabled = false;
+      }
     });
     currentLabel.appendChild(currentCheck);
     currentLabel.appendChild(document.createTextNode("Current role"));
@@ -4032,6 +4194,88 @@
   }
 
   /* -- 2. achievements & impact -- */
+
+  /* -- 1b. decorative visual career timeline (read-only, built from role data) -- */
+
+  var VTIMELINE_COLORS = [FINANCE_ACCENT, "#E8A34C", MEDICAL_ACCENT, PROFESSIONAL_ACCENT, GOALS_ACCENT];
+
+  function allProfessionalRoleMilestones(){
+    var out = [];
+    state.professional.employers.forEach(function(emp){
+      emp.roles.forEach(function(role){
+        if(!role.startDate) return; // undated roles are never guessed into a position
+        out.push({
+          id: role.id, employerName: emp.employerName || "(unnamed employer)",
+          jobTitle: role.jobTitle || "(untitled role)", startDate: role.startDate
+        });
+      });
+    });
+    out.sort(function(a,b){ return a.startDate.localeCompare(b.startDate); });
+    return out;
+  }
+
+  function buildProfessionalVisualTimeline(view){
+    var section = document.createElement("div");
+    section.className = "fin-section";
+    section.innerHTML = '<h2 class="sec-title">Career timeline</h2>';
+
+    var intro = document.createElement("p");
+    intro.className = "hero-loop";
+    intro.style.marginBottom = "24px";
+    intro.textContent = "A visual read of the roles entered in Employment Timeline, earliest first. Add or edit employers and roles there \u2014 this view is generated from that data.";
+    section.appendChild(intro);
+
+    var milestones = allProfessionalRoleMilestones();
+    var undatedCount = 0;
+    state.professional.employers.forEach(function(emp){ emp.roles.forEach(function(r){ if(!r.startDate) undatedCount++; }); });
+
+    if(!milestones.length){
+      var empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No dated roles yet \u2014 add an employer and a role with a start date in Employment Timeline to see it here.";
+      section.appendChild(empty);
+      view.appendChild(section);
+      return;
+    }
+
+    var vt = document.createElement("div");
+    vt.className = "vtimeline";
+    milestones.forEach(function(m, idx){
+      var side = (idx % 2 === 0) ? "left" : "right";
+      var color = VTIMELINE_COLORS[idx % VTIMELINE_COLORS.length];
+
+      var item = document.createElement("div");
+      item.className = "vtimeline-item " + side;
+
+      var node = document.createElement("div");
+      node.className = "vtimeline-node";
+      node.style.background = color;
+      item.appendChild(node);
+
+      var card = document.createElement("div");
+      card.className = "vtimeline-card";
+      card.style.borderTopColor = color;
+      card.style.borderTopWidth = "3px";
+      card.innerHTML =
+        '<div class="vtimeline-year" style="color:' + color + ';">' + formatMonthYear(m.startDate) + '</div>' +
+        '<div class="vtimeline-role">' + escapeHtml(m.jobTitle) + '</div>' +
+        '<div class="vtimeline-employer">' + escapeHtml(m.employerName) + '</div>';
+      item.appendChild(card);
+
+      vt.appendChild(item);
+    });
+    section.appendChild(vt);
+
+    if(undatedCount > 0){
+      var note = document.createElement("p");
+      note.className = "empty";
+      note.style.marginTop = "8px";
+      note.textContent = undatedCount + " role" + (undatedCount === 1 ? " has" : "s have") + " no start date, so " + (undatedCount === 1 ? "it isn't" : "they aren't") + " shown here \u2014 add a start date in Employment Timeline to include it.";
+      section.appendChild(note);
+    }
+
+    view.appendChild(section);
+  }
 
   function buildProfessionalAchievements(view){
     var section = document.createElement("div");
