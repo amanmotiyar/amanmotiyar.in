@@ -316,10 +316,16 @@
   .vtimeline-employer{ font-size:12.5px; color:var(--faint); }
 
   @media (max-width:640px){
-    .vtimeline::before{ left:7px; }
-    .vtimeline-item, .vtimeline-item.left, .vtimeline-item.right{ justify-content:flex-start; padding-left:26px; }
-    .vtimeline-card{ width:100%; }
-    .vtimeline-node{ left:7px; }
+    .vtimeline-card{ width:calc(50% - 20px); padding:11px 12px; }
+    .vtimeline-item{ margin-bottom:26px; }
+    .vtimeline-role{ font-size:15px; }
+    .vtimeline-year{ font-size:10px; }
+    .vtimeline-employer{ font-size:11px; }
+  }
+  @media (max-width:400px){
+    .vtimeline-card{ width:calc(50% - 13px); padding:9px 10px; }
+    .vtimeline-role{ font-size:13.5px; line-height:1.25; }
+    .vtimeline-node{ width:11px; height:11px; }
   }
 </style>
 </head>
