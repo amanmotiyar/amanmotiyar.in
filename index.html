@@ -4086,7 +4086,12 @@
     var startCtl = document.createElement("div"); startCtl.className = "fin-ctl";
     startCtl.innerHTML = "<label>Start date</label>";
     var startInp = styledDateInput(emp.startDate);
-    startInp.addEventListener("change", function(){ emp.startDate = startInp.value; scheduleSave(); renderMain(); });
+    var empStartRenderTimer = null;
+    startInp.addEventListener("change", function(){
+      emp.startDate = startInp.value; scheduleSave();
+      clearTimeout(empStartRenderTimer);
+      empStartRenderTimer = setTimeout(renderMain, 800);
+    });
     startCtl.appendChild(startInp);
     datesRow.appendChild(startCtl);
 
@@ -4094,7 +4099,12 @@
     endCtl.innerHTML = "<label>End date</label>";
     var endInp = styledDateInput(emp.endDate);
     endInp.disabled = !emp.endDate;
-    endInp.addEventListener("change", function(){ emp.endDate = endInp.value; scheduleSave(); renderMain(); });
+    var empEndRenderTimer = null;
+    endInp.addEventListener("change", function(){
+      emp.endDate = endInp.value; scheduleSave();
+      clearTimeout(empEndRenderTimer);
+      empEndRenderTimer = setTimeout(renderMain, 800);
+    });
     endCtl.appendChild(endInp);
     var currentLabel = document.createElement("label");
     currentLabel.style.cssText = "display:flex; align-items:center; gap:4px; font-size:10px; color:var(--faint); margin-top:4px;";
@@ -4176,13 +4186,23 @@
 
     var startCell = document.createElement("td");
     var startInp = styledDateInput(role.startDate);
-    startInp.addEventListener("change", function(){ role.startDate = startInp.value; scheduleSave(); renderMain(); });
+    var roleStartRenderTimer = null;
+    startInp.addEventListener("change", function(){
+      role.startDate = startInp.value; scheduleSave();
+      clearTimeout(roleStartRenderTimer);
+      roleStartRenderTimer = setTimeout(renderMain, 800);
+    });
     startCell.appendChild(startInp);
     row.appendChild(startCell);
 
     var endCell = document.createElement("td");
     var endInp = styledDateInput(role.endDate);
-    endInp.addEventListener("change", function(){ role.endDate = endInp.value; scheduleSave(); renderMain(); });
+    var roleEndRenderTimer = null;
+    endInp.addEventListener("change", function(){
+      role.endDate = endInp.value; scheduleSave();
+      clearTimeout(roleEndRenderTimer);
+      roleEndRenderTimer = setTimeout(renderMain, 800);
+    });
     endInp.disabled = !role.endDate;
     endCell.appendChild(endInp);
     var currentLabel = document.createElement("label");
@@ -4358,7 +4378,12 @@
 
     var dateCell = document.createElement("td");
     var dateInp = styledDateInput(ach.date);
-    dateInp.addEventListener("change", function(){ ach.date = dateInp.value; scheduleSave(); renderMain(); });
+    var achDateRenderTimer = null;
+    dateInp.addEventListener("change", function(){
+      ach.date = dateInp.value; scheduleSave();
+      clearTimeout(achDateRenderTimer);
+      achDateRenderTimer = setTimeout(renderMain, 800);
+    });
     dateCell.appendChild(dateInp);
     row.appendChild(dateCell);
 
