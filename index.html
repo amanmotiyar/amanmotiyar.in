@@ -315,10 +315,12 @@
   "use strict";
   var STORAGE_KEY = "aman-mlg-life-tracker-v2";
 
-  var DOMAIN_DEFS = [
-    { key:"professional", name:"Professional", subtitle:"Career & craft", accent:"#5B8DEF", gem:"Sapphire",
-      subs:[ {name:"Professional Profile", url:""}, {name:"Skills & Competencies", url:""}, {name:"Career Strategy", url:""} ] }
-  ];
+  var DOMAIN_DEFS = [];
+
+  var PROFESSIONAL_ACCENT = "#5B8DEF";
+  var PROFESSIONAL_GEM = "Sapphire";
+  var professionalMode = "timeline";
+  var professionalReviewSelectedMonth = null;
 
   var MEDICAL_ACCENT = "#E85D75";
   var MEDICAL_GEM = "Ruby";
@@ -840,6 +842,7 @@
         netWorth: { bankCash: 0, property: [], otherAssets: [], liabilities: [] },
         snapshots: []
       },
+      professional: { employers: [], achievements: [], goals: [], reviews: {} },
       goals: []
     };
   }
@@ -868,6 +871,12 @@
       }
     }
     if(parsed.investments) mergeInvestments(base.investments, parsed.investments);
+    if(parsed.professional){
+      base.professional.employers = Array.isArray(parsed.professional.employers) ? parsed.professional.employers : [];
+      base.professional.achievements = Array.isArray(parsed.professional.achievements) ? parsed.professional.achievements : [];
+      base.professional.goals = Array.isArray(parsed.professional.goals) ? parsed.professional.goals : [];
+      base.professional.reviews = (parsed.professional.reviews && typeof parsed.professional.reviews === "object") ? parsed.professional.reviews : {};
+    }
     base.goals = Array.isArray(parsed.goals) ? parsed.goals : [];
     return base;
   }
@@ -948,6 +957,7 @@
     if(key === "investments") return INVESTMENTS_ACCENT;
     if(key === "dreams") return GOALS_ACCENT;
     if(key === "health") return MEDICAL_ACCENT;
+    if(key === "professional") return PROFESSIONAL_ACCENT;
     var def = domainDef(key);
     return def ? def.accent : GOLD;
   }
@@ -985,6 +995,7 @@
     else if(activeTab === "investments") buildInvestments(view);
     else if(activeTab === "dreams") buildGoals(view);
     else if(activeTab === "health") buildMedicalReports(view);
+    else if(activeTab === "professional") buildProfessional(view);
     else buildDomain(view, activeTab);
   }
 
@@ -1074,6 +1085,22 @@
       '<p class="preview">' + (medicalSignedIn ? "Your report library" : "Sign in to sync to use this") + '</p>';
     medicalTile.addEventListener("click", function(){ setActiveTab("health"); });
     tiles.appendChild(medicalTile);
+
+    var profRoleCount = 0;
+    state.professional.employers.forEach(function(e){ profRoleCount += e.roles.length; });
+    var profTile = document.createElement("div");
+    profTile.className = "tile";
+    var profChip = state.professional.employers.length
+      ? ('<span class="status-chip" style="color:' + PROFESSIONAL_ACCENT + '">' + state.professional.employers.length + ' employer' + (state.professional.employers.length === 1 ? "" : "s") + '</span>')
+      : '<span class="status-chip">not set</span>';
+    profTile.innerHTML =
+      '<div style="position:absolute;top:0;left:0;right:0;height:3px;background:' + PROFESSIONAL_ACCENT + ';"></div>' +
+      profChip +
+      '<h3>Professional</h3>' +
+      '<p class="tsub">Employment Career Tracker &middot; ' + PROFESSIONAL_GEM + '</p>' +
+      '<p class="preview">' + (profRoleCount ? (profRoleCount + " role" + (profRoleCount === 1 ? "" : "s") + " tracked") : "No roles yet") + '</p>';
+    profTile.addEventListener("click", function(){ setActiveTab("professional"); });
+    tiles.appendChild(profTile);
 
     DOMAIN_DEFS.forEach(function(def){
       var d = state.domains[def.key];
@@ -3808,6 +3835,544 @@
     detailSection.id = "medicalDetailSection";
     view.appendChild(detailSection);
     medicalDetailContainer = detailSection;
+  }
+
+  /* ---------------- professional: employment career tracker ---------------- */
+
+  function allProfessionalRoles(){
+    var out = [];
+    state.professional.employers.forEach(function(emp){
+      emp.roles.forEach(function(role){
+        out.push({ id: role.id, label: (emp.employerName || "(unnamed employer)") + " \u2014 " + (role.jobTitle || "(untitled role)") });
+      });
+    });
+    return out;
+  }
+
+  function styledDateInput(value){
+    var inp = document.createElement("input");
+    inp.type = "date"; inp.value = value || "";
+    inp.style.cssText = "background:transparent;border:none;border-bottom:1px solid var(--line);color:var(--ink);font-family:'JetBrains Mono', monospace;font-size:11.5px;padding:3px 2px;";
+    return inp;
+  }
+
+  function buildProfessional(view){
+    view.innerHTML =
+      '<div class="focus-eyebrow">PROFESSIONAL &middot; SAPPHIRE</div>' +
+      '<div class="focus-title" style="font-size:36px; margin-bottom:10px;">Employment Career Tracker</div>';
+
+    var intro = document.createElement("p");
+    intro.className = "hero-loop";
+    intro.style.marginBottom = "24px";
+    intro.textContent = "Employment only \u2014 side businesses, personal projects, and financial tracking live elsewhere in this app.";
+    view.appendChild(intro);
+
+    var modeToggle = document.createElement("div");
+    modeToggle.className = "fin-mode-toggle";
+    [["timeline","Employment Timeline"], ["achievements","Achievements & Impact"], ["goals","Career Goals"], ["review","Monthly Career Review"]].forEach(function(pair){
+      var btn = document.createElement("button");
+      btn.type = "button"; btn.textContent = pair[1];
+      if(professionalMode === pair[0]) btn.classList.add("on");
+      btn.addEventListener("click", function(){
+        if(professionalMode === pair[0]) return;
+        professionalMode = pair[0];
+        renderMain();
+      });
+      modeToggle.appendChild(btn);
+    });
+    view.appendChild(modeToggle);
+
+    if(professionalMode === "achievements") buildProfessionalAchievements(view);
+    else if(professionalMode === "goals") buildProfessionalGoals(view);
+    else if(professionalMode === "review") buildProfessionalReview(view);
+    else buildProfessionalTimeline(view);
+  }
+
+  /* -- 1. employment timeline -- */
+
+  function buildProfessionalTimeline(view){
+    var section = document.createElement("div");
+    section.className = "fin-section";
+    section.innerHTML = '<h2 class="sec-title">Employers &amp; roles</h2>';
+
+    if(!state.professional.employers.length){
+      var empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No employers yet \u2014 add your first one below.";
+      section.appendChild(empty);
+    }
+
+    state.professional.employers.forEach(function(emp){
+      section.appendChild(buildEmployerCard(emp));
+    });
+    view.appendChild(section);
+
+    var addBtn = document.createElement("button");
+    addBtn.className = "add-chip";
+    addBtn.style.marginTop = "14px";
+    addBtn.textContent = "+ add employer";
+    addBtn.addEventListener("click", function(){
+      state.professional.employers.push({ id: uid(), employerName: "", roles: [] });
+      scheduleSave();
+      renderMain();
+    });
+    view.appendChild(addBtn);
+  }
+
+  function buildEmployerCard(emp){
+    var card = document.createElement("div");
+    card.style.cssText = "border:1px solid var(--line); border-radius:12px; padding:20px 22px; margin-bottom:20px;";
+
+    var headerRow = document.createElement("div");
+    headerRow.style.cssText = "display:flex; align-items:center; gap:12px; margin-bottom:16px;";
+    var nameInp = document.createElement("input");
+    nameInp.type = "text"; nameInp.placeholder = "Employer name"; nameInp.value = emp.employerName || "";
+    nameInp.style.cssText = "flex:1; background:transparent; border:none; border-bottom:1px solid var(--line); color:var(--ink); font-family:'Cormorant Garamond',serif; font-size:22px; padding:4px 2px;";
+    nameInp.addEventListener("input", function(){ emp.employerName = nameInp.value; scheduleSave(); });
+    headerRow.appendChild(nameInp);
+
+    var rmEmpBtn = document.createElement("button");
+    rmEmpBtn.className = "s-remove"; rmEmpBtn.textContent = "\u00d7"; rmEmpBtn.title = "Remove employer (and its roles)";
+    rmEmpBtn.addEventListener("click", function(){
+      if(!confirm("Remove this employer and all its roles? This can't be undone.")) return;
+      state.professional.employers = state.professional.employers.filter(function(x){ return x.id !== emp.id; });
+      scheduleSave(); renderMain();
+    });
+    headerRow.appendChild(rmEmpBtn);
+    card.appendChild(headerRow);
+
+    var tableWrap = document.createElement("div");
+    tableWrap.className = "fin-table-wrap";
+    var table = document.createElement("table");
+    table.className = "fin-table";
+    table.innerHTML = "<thead><tr><th>Job Title</th><th>Department</th><th>Start Date</th><th>End Date</th><th>Notes</th><th></th></tr></thead>";
+    var tbody = document.createElement("tbody");
+
+    if(!emp.roles.length){
+      var trEmpty = document.createElement("tr");
+      trEmpty.innerHTML = '<td colspan="6" class="empty" style="padding:10px 0;">No roles yet at this employer.</td>';
+      tbody.appendChild(trEmpty);
+    }
+    emp.roles.forEach(function(role){ tbody.appendChild(buildRoleRow(emp, role)); });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    card.appendChild(tableWrap);
+
+    var addRoleBtn = document.createElement("button");
+    addRoleBtn.className = "add-chip";
+    addRoleBtn.style.marginTop = "10px";
+    addRoleBtn.textContent = "+ add role";
+    addRoleBtn.addEventListener("click", function(){
+      emp.roles.push({ id: uid(), jobTitle: "", department: "", startDate: "", endDate: "", notes: "" });
+      scheduleSave(); renderMain();
+    });
+    card.appendChild(addRoleBtn);
+
+    return card;
+  }
+
+  function buildRoleRow(emp, role){
+    var row = document.createElement("tr");
+    row.className = "fin-row";
+
+    var titleCell = document.createElement("td");
+    var titleInp = smallTextInput(role.jobTitle, "Job title", 140);
+    titleInp.addEventListener("input", function(){ role.jobTitle = titleInp.value; scheduleSave(); });
+    titleCell.appendChild(titleInp);
+    row.appendChild(titleCell);
+
+    var deptCell = document.createElement("td");
+    var deptInp = smallTextInput(role.department, "Department", 120);
+    deptInp.addEventListener("input", function(){ role.department = deptInp.value; scheduleSave(); });
+    deptCell.appendChild(deptInp);
+    row.appendChild(deptCell);
+
+    var startCell = document.createElement("td");
+    var startInp = styledDateInput(role.startDate);
+    startInp.addEventListener("change", function(){ role.startDate = startInp.value; scheduleSave(); });
+    startCell.appendChild(startInp);
+    row.appendChild(startCell);
+
+    var endCell = document.createElement("td");
+    var endInp = styledDateInput(role.endDate);
+    endInp.addEventListener("change", function(){ role.endDate = endInp.value; scheduleSave(); });
+    endInp.disabled = !role.endDate;
+    endCell.appendChild(endInp);
+    var currentLabel = document.createElement("label");
+    currentLabel.style.cssText = "display:flex; align-items:center; gap:4px; font-size:10px; color:var(--faint); margin-top:4px;";
+    var currentCheck = document.createElement("input");
+    currentCheck.type = "checkbox"; currentCheck.checked = !role.endDate;
+    currentCheck.addEventListener("change", function(){
+      if(currentCheck.checked){ role.endDate = ""; endInp.value = ""; endInp.disabled = true; }
+      else{ endInp.disabled = false; }
+      scheduleSave();
+    });
+    currentLabel.appendChild(currentCheck);
+    currentLabel.appendChild(document.createTextNode("Current role"));
+    endCell.appendChild(currentLabel);
+    row.appendChild(endCell);
+
+    var notesCell = document.createElement("td");
+    var notesInp = smallTextInput(role.notes, "Notes", 150);
+    notesInp.addEventListener("input", function(){ role.notes = notesInp.value; scheduleSave(); });
+    notesCell.appendChild(notesInp);
+    row.appendChild(notesCell);
+
+    var rmCell = document.createElement("td");
+    var rmBtn = document.createElement("button");
+    rmBtn.className = "s-remove"; rmBtn.textContent = "\u00d7"; rmBtn.title = "Remove role";
+    rmBtn.addEventListener("click", function(){
+      emp.roles = emp.roles.filter(function(x){ return x.id !== role.id; });
+      scheduleSave(); renderMain();
+    });
+    rmCell.appendChild(rmBtn);
+    row.appendChild(rmCell);
+
+    return row;
+  }
+
+  /* -- 2. achievements & impact -- */
+
+  function buildProfessionalAchievements(view){
+    var section = document.createElement("div");
+    section.className = "fin-section";
+    section.innerHTML = '<h2 class="sec-title">Achievements &amp; impact</h2>';
+
+    var tableWrap = document.createElement("div");
+    tableWrap.className = "fin-table-wrap";
+    var table = document.createElement("table");
+    table.className = "fin-table";
+    table.innerHTML = "<thead><tr><th>Date</th><th>Title</th><th>Role</th><th>Description</th><th>Measurable outcome</th><th>Recognition</th><th></th></tr></thead>";
+    var tbody = document.createElement("tbody");
+
+    if(!state.professional.achievements.length){
+      var tr = document.createElement("tr");
+      tr.innerHTML = '<td colspan="7" class="empty" style="padding:10px 0;">No achievements logged yet \u2014 add your first one below.</td>';
+      tbody.appendChild(tr);
+    }
+
+    var roles = allProfessionalRoles();
+    state.professional.achievements
+      .slice()
+      .sort(function(a,b){ return (b.date||"").localeCompare(a.date||""); })
+      .forEach(function(ach){ tbody.appendChild(buildAchievementRow(ach, roles)); });
+
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    section.appendChild(tableWrap);
+    view.appendChild(section);
+
+    var addBtn = document.createElement("button");
+    addBtn.className = "add-chip";
+    addBtn.style.marginTop = "14px";
+    addBtn.textContent = "+ add achievement";
+    addBtn.addEventListener("click", function(){
+      state.professional.achievements.push({ id: uid(), date: "", title: "", roleId: "", description: "", outcome: "", recognition: "" });
+      scheduleSave(); renderMain();
+    });
+    view.appendChild(addBtn);
+  }
+
+  function buildAchievementRow(ach, roles){
+    var row = document.createElement("tr");
+    row.className = "fin-row";
+
+    var dateCell = document.createElement("td");
+    var dateInp = styledDateInput(ach.date);
+    dateInp.addEventListener("change", function(){ ach.date = dateInp.value; scheduleSave(); renderMain(); });
+    dateCell.appendChild(dateInp);
+    row.appendChild(dateCell);
+
+    var titleCell = document.createElement("td");
+    var titleInp = smallTextInput(ach.title, "Title", 140);
+    titleInp.addEventListener("input", function(){ ach.title = titleInp.value; scheduleSave(); });
+    titleCell.appendChild(titleInp);
+    row.appendChild(titleCell);
+
+    var roleCell = document.createElement("td");
+    var roleSel = document.createElement("select");
+    roleSel.className = "fin-select";
+    var blankOpt = document.createElement("option"); blankOpt.value = ""; blankOpt.textContent = "\u2014";
+    roleSel.appendChild(blankOpt);
+    roles.forEach(function(r){
+      var o = document.createElement("option"); o.value = r.id; o.textContent = r.label;
+      if(ach.roleId === r.id) o.selected = true;
+      roleSel.appendChild(o);
+    });
+    roleSel.addEventListener("change", function(){ ach.roleId = roleSel.value; scheduleSave(); });
+    roleCell.appendChild(roleSel);
+    row.appendChild(roleCell);
+
+    var descCell = document.createElement("td");
+    var descInp = smallTextInput(ach.description, "Description", 170);
+    descInp.addEventListener("input", function(){ ach.description = descInp.value; scheduleSave(); });
+    descCell.appendChild(descInp);
+    row.appendChild(descCell);
+
+    var outcomeCell = document.createElement("td");
+    var outcomeInp = smallTextInput(ach.outcome, "Measurable outcome", 150);
+    outcomeInp.addEventListener("input", function(){ ach.outcome = outcomeInp.value; scheduleSave(); });
+    outcomeCell.appendChild(outcomeInp);
+    row.appendChild(outcomeCell);
+
+    var recCell = document.createElement("td");
+    var recInp = smallTextInput(ach.recognition, "Recognition", 130);
+    recInp.addEventListener("input", function(){ ach.recognition = recInp.value; scheduleSave(); });
+    recCell.appendChild(recInp);
+    row.appendChild(recCell);
+
+    var rmCell = document.createElement("td");
+    var rmBtn = document.createElement("button");
+    rmBtn.className = "s-remove"; rmBtn.textContent = "\u00d7"; rmBtn.title = "Remove achievement";
+    rmBtn.addEventListener("click", function(){
+      state.professional.achievements = state.professional.achievements.filter(function(x){ return x.id !== ach.id; });
+      scheduleSave(); renderMain();
+    });
+    rmCell.appendChild(rmBtn);
+    row.appendChild(rmCell);
+
+    return row;
+  }
+
+  /* -- 3. career goals -- */
+
+  function buildProfessionalGoals(view){
+    var section = document.createElement("div");
+    section.className = "fin-section";
+    section.innerHTML = '<h2 class="sec-title">Career goals</h2>';
+
+    if(!state.professional.goals.length){
+      var empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No career goals yet \u2014 add your first one below.";
+      section.appendChild(empty);
+    }
+    state.professional.goals.forEach(function(g){ section.appendChild(buildCareerGoalCard(g)); });
+    view.appendChild(section);
+
+    var addBtn = document.createElement("button");
+    addBtn.className = "add-chip";
+    addBtn.style.marginTop = "14px";
+    addBtn.textContent = "+ add career goal";
+    addBtn.addEventListener("click", function(){
+      state.professional.goals.push({ id: uid(), name: "", targetDate: "", status: "Not started", notes: "", milestones: [] });
+      scheduleSave(); renderMain();
+    });
+    view.appendChild(addBtn);
+  }
+
+  function buildCareerGoalCard(g){
+    var card = document.createElement("div");
+    card.style.cssText = "border:1px solid var(--line); border-radius:12px; padding:20px 22px; margin-bottom:20px;";
+
+    function ctl(labelText, el){
+      var c = document.createElement("div"); c.className = "fin-ctl";
+      var l = document.createElement("label"); l.textContent = labelText;
+      c.appendChild(l); c.appendChild(el);
+      return c;
+    }
+
+    var row = document.createElement("div");
+    row.className = "fin-controls";
+    row.style.marginBottom = "16px";
+
+    var nameInp = smallTextInput(g.name, "Goal name", 220);
+    nameInp.style.fontSize = "14px";
+    nameInp.addEventListener("input", function(){ g.name = nameInp.value; scheduleSave(); });
+    row.appendChild(ctl("Goal", nameInp));
+
+    var dateInp = styledDateInput(g.targetDate);
+    dateInp.addEventListener("change", function(){ g.targetDate = dateInp.value; scheduleSave(); });
+    row.appendChild(ctl("Target date", dateInp));
+
+    var statusSel = document.createElement("select");
+    statusSel.className = "fin-select";
+    ["Not started","In progress","Achieved","On hold"].forEach(function(s){
+      var o = document.createElement("option"); o.value = s; o.textContent = s;
+      if(g.status === s) o.selected = true;
+      statusSel.appendChild(o);
+    });
+    statusSel.addEventListener("change", function(){ g.status = statusSel.value; scheduleSave(); renderMain(); });
+    row.appendChild(ctl("Status", statusSel));
+
+    var rmBtn = document.createElement("button");
+    rmBtn.className = "s-remove"; rmBtn.textContent = "\u00d7"; rmBtn.style.alignSelf = "flex-end"; rmBtn.title = "Remove goal";
+    rmBtn.addEventListener("click", function(){
+      if(!confirm("Remove this career goal?")) return;
+      state.professional.goals = state.professional.goals.filter(function(x){ return x.id !== g.id; });
+      scheduleSave(); renderMain();
+    });
+    row.appendChild(rmBtn);
+    card.appendChild(row);
+
+    var notesLabel = document.createElement("label");
+    notesLabel.style.cssText = "display:block; font-size:11px; color:var(--faint); margin-bottom:6px;";
+    notesLabel.textContent = "Notes";
+    card.appendChild(notesLabel);
+    var notesTa = document.createElement("textarea");
+    notesTa.value = g.notes || ""; notesTa.rows = 2;
+    notesTa.style.cssText = "width:100%; background:transparent; border:1px solid var(--line); border-radius:8px; color:var(--ink); padding:8px 10px; font-family:inherit; font-size:13px; margin-bottom:18px;";
+    notesTa.addEventListener("input", function(){ g.notes = notesTa.value; scheduleSave(); });
+    card.appendChild(notesTa);
+
+    var msLabel = document.createElement("div");
+    msLabel.style.cssText = "font-size:10.5px; letter-spacing:0.06em; color:var(--faint); margin-bottom:10px; font-family:'JetBrains Mono',monospace;";
+    msLabel.textContent = "MILESTONES";
+    card.appendChild(msLabel);
+
+    if(!g.milestones.length){
+      var msEmpty = document.createElement("p");
+      msEmpty.className = "empty";
+      msEmpty.style.cssText = "font-size:12.5px; margin-bottom:10px;";
+      msEmpty.textContent = "No milestones yet.";
+      card.appendChild(msEmpty);
+    }
+
+    g.milestones.forEach(function(ms){
+      var msRow = document.createElement("div");
+      msRow.style.cssText = "display:flex; align-items:center; gap:10px; margin-bottom:8px;";
+
+      var check = document.createElement("input");
+      check.type = "checkbox"; check.checked = !!ms.completed;
+      check.addEventListener("change", function(){ ms.completed = check.checked; scheduleSave(); renderMain(); });
+      msRow.appendChild(check);
+
+      var msText = document.createElement("input");
+      msText.type = "text"; msText.value = ms.text || ""; msText.placeholder = "Milestone";
+      msText.style.cssText = "flex:1; background:transparent; border:none; border-bottom:1px solid var(--line); color:var(--ink); padding:3px 2px; font-size:13px;" + (ms.completed ? " text-decoration:line-through; opacity:0.6;" : "");
+      msText.addEventListener("input", function(){ ms.text = msText.value; scheduleSave(); });
+      msRow.appendChild(msText);
+
+      var msRm = document.createElement("button");
+      msRm.className = "s-remove"; msRm.textContent = "\u00d7"; msRm.title = "Remove milestone";
+      msRm.addEventListener("click", function(){
+        g.milestones = g.milestones.filter(function(x){ return x.id !== ms.id; });
+        scheduleSave(); renderMain();
+      });
+      msRow.appendChild(msRm);
+
+      card.appendChild(msRow);
+    });
+
+    var addMsBtn = document.createElement("button");
+    addMsBtn.className = "add-chip";
+    addMsBtn.style.marginTop = "6px";
+    addMsBtn.textContent = "+ add milestone";
+    addMsBtn.addEventListener("click", function(){
+      g.milestones.push({ id: uid(), text: "", completed: false });
+      scheduleSave(); renderMain();
+    });
+    card.appendChild(addMsBtn);
+
+    return card;
+  }
+
+  /* -- 4. monthly career review -- */
+
+  function buildProfessionalReview(view){
+    var section = document.createElement("div");
+    section.className = "fin-section";
+    section.innerHTML = '<h2 class="sec-title">Monthly career review</h2>';
+
+    var nowMonth = new Date().toISOString().slice(0,7);
+    var selectedMonth = professionalReviewSelectedMonth || nowMonth;
+
+    var controls = document.createElement("div");
+    controls.className = "fin-controls";
+    controls.style.marginBottom = "22px";
+    var monthCtl = document.createElement("div"); monthCtl.className = "fin-ctl";
+    monthCtl.innerHTML = "<label>Month</label>";
+    var monthInp = document.createElement("input");
+    monthInp.type = "month"; monthInp.className = "fin-select"; monthInp.value = selectedMonth;
+    monthInp.addEventListener("change", function(){
+      professionalReviewSelectedMonth = monthInp.value;
+      renderMain();
+    });
+    monthCtl.appendChild(monthInp);
+    controls.appendChild(monthCtl);
+    section.appendChild(controls);
+
+    var existing = state.professional.reviews[selectedMonth];
+    var review = existing || { accomplishments:"", challenges:"", feedbackReceived:"", lessonsLearned:"", nextPriorities:"", linkedAchievementIds:[], linkedGoalIds:[] };
+
+    function ensureStored(){
+      if(!state.professional.reviews[selectedMonth]) state.professional.reviews[selectedMonth] = review;
+    }
+
+    function field(labelText, key, ph){
+      var wrap = document.createElement("div");
+      wrap.style.marginBottom = "16px";
+      var l = document.createElement("label");
+      l.style.cssText = "display:block; font-size:11px; color:var(--faint); margin-bottom:6px;";
+      l.textContent = labelText;
+      wrap.appendChild(l);
+      var ta = document.createElement("textarea");
+      ta.value = review[key] || ""; ta.rows = 3; ta.placeholder = ph || "";
+      ta.style.cssText = "width:100%; background:transparent; border:1px solid var(--line); border-radius:8px; color:var(--ink); padding:8px 10px; font-family:inherit; font-size:13px;";
+      ta.addEventListener("input", function(){
+        review[key] = ta.value;
+        ensureStored();
+        scheduleSave();
+      });
+      wrap.appendChild(ta);
+      return wrap;
+    }
+
+    section.appendChild(field("Accomplishments", "accomplishments"));
+    section.appendChild(field("Challenges", "challenges"));
+    section.appendChild(field("Feedback received", "feedbackReceived"));
+    section.appendChild(field("Lessons learned", "lessonsLearned"));
+    section.appendChild(field("Next month's priorities", "nextPriorities"));
+
+    var achLabel = document.createElement("div");
+    achLabel.style.cssText = "font-size:10.5px; letter-spacing:0.06em; color:var(--faint); margin-bottom:10px; font-family:'JetBrains Mono',monospace;";
+    achLabel.textContent = "LINK ACHIEVEMENTS (OPTIONAL)";
+    section.appendChild(achLabel);
+    if(!state.professional.achievements.length){
+      var noAch = document.createElement("p"); noAch.className = "empty"; noAch.style.fontSize = "12.5px"; noAch.style.marginBottom = "18px";
+      noAch.textContent = "No achievements logged yet.";
+      section.appendChild(noAch);
+    }
+    state.professional.achievements.forEach(function(ach){
+      var row = document.createElement("label");
+      row.style.cssText = "display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:13px; cursor:pointer;";
+      var cb = document.createElement("input"); cb.type = "checkbox";
+      cb.checked = review.linkedAchievementIds.indexOf(ach.id) !== -1;
+      cb.addEventListener("change", function(){
+        if(cb.checked){ if(review.linkedAchievementIds.indexOf(ach.id) === -1) review.linkedAchievementIds.push(ach.id); }
+        else{ review.linkedAchievementIds = review.linkedAchievementIds.filter(function(x){ return x !== ach.id; }); }
+        ensureStored(); scheduleSave();
+      });
+      row.appendChild(cb);
+      row.appendChild(document.createTextNode((ach.title || "(untitled achievement)") + (ach.date ? " \u2014 " + ach.date : "")));
+      section.appendChild(row);
+    });
+
+    var goalLabel = document.createElement("div");
+    goalLabel.style.cssText = "font-size:10.5px; letter-spacing:0.06em; color:var(--faint); margin:18px 0 10px;font-family:'JetBrains Mono',monospace;";
+    goalLabel.textContent = "LINK CAREER GOALS (OPTIONAL)";
+    section.appendChild(goalLabel);
+    if(!state.professional.goals.length){
+      var noGoal = document.createElement("p"); noGoal.className = "empty"; noGoal.style.fontSize = "12.5px";
+      noGoal.textContent = "No career goals yet.";
+      section.appendChild(noGoal);
+    }
+    state.professional.goals.forEach(function(g){
+      var row = document.createElement("label");
+      row.style.cssText = "display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:13px; cursor:pointer;";
+      var cb = document.createElement("input"); cb.type = "checkbox";
+      cb.checked = review.linkedGoalIds.indexOf(g.id) !== -1;
+      cb.addEventListener("change", function(){
+        if(cb.checked){ if(review.linkedGoalIds.indexOf(g.id) === -1) review.linkedGoalIds.push(g.id); }
+        else{ review.linkedGoalIds = review.linkedGoalIds.filter(function(x){ return x !== g.id; }); }
+        ensureStored(); scheduleSave();
+      });
+      row.appendChild(cb);
+      row.appendChild(document.createTextNode(g.name || "(unnamed goal)"));
+      section.appendChild(row);
+    });
+
+    view.appendChild(section);
   }
 
   function buildDomain(view, key){
