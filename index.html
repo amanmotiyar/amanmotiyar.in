@@ -3474,15 +3474,36 @@
     });
     panel.appendChild(statsWrap);
 
+    var planned = parseFloat(g.plannedMonthlyContribution) || 0;
+    var paceColor = "var(--faint)";
+    var paceLabel = "";
+    if(req.status === "funded"){
+      paceColor = "#4CAF7D"; paceLabel = "\u2713 Fully funded";
+    }else if(req.status === "ok"){
+      if(planned >= req.value){ paceColor = "#4CAF7D"; paceLabel = "\u2713 On track \u2014 your planned contribution meets what's needed"; }
+      else{ paceColor = GOALS_OVERDUE_COLOR; paceLabel = "\u26a0 Behind pace \u2014 short by " + fmtINRz(req.value - planned) + " / month to hit the target date"; }
+    }else if(req.status === "overdue"){
+      paceColor = GOALS_OVERDUE_COLOR; paceLabel = "\u26a0 Target date has passed";
+    }
+
     var compareWrap = document.createElement("div");
-    compareWrap.style.cssText = "display:flex; gap:22px; flex-wrap:wrap; margin-bottom:18px; font-size:13px;";
+    compareWrap.style.cssText = "border-left:3px solid " + paceColor + "; padding:4px 0 4px 14px; margin-bottom:18px;";
+    if(paceLabel){
+      var paceEl = document.createElement("div");
+      paceEl.style.cssText = "color:" + paceColor + "; font-size:12.5px; font-weight:600; margin-bottom:8px;";
+      paceEl.textContent = paceLabel;
+      compareWrap.appendChild(paceEl);
+    }
+    var figuresRow = document.createElement("div");
+    figuresRow.style.cssText = "display:flex; gap:22px; flex-wrap:wrap; font-size:13px;";
     var plannedText = "<strong>Your planned contribution:</strong> " + fmtINRz(g.plannedMonthlyContribution || 0) + " / month";
     var requiredText;
     if(req.status === "funded") requiredText = "<strong>Required to reach target:</strong> already fully funded";
     else if(req.status === "no-date") requiredText = "<strong>Required to reach target:</strong> \u2014 (set a target date)";
     else if(req.status === "overdue") requiredText = "<strong>Required to reach target:</strong> target date has passed, " + fmtINRz(remaining) + " still needed";
     else requiredText = "<strong>Required to reach target:</strong> " + fmtINRz(req.value) + " / month (over " + req.months + " month" + (req.months === 1 ? "" : "s") + ")";
-    compareWrap.innerHTML = "<div>" + plannedText + "</div><div>" + requiredText + "</div>";
+    figuresRow.innerHTML = "<div>" + plannedText + "</div><div>" + requiredText + "</div>";
+    compareWrap.appendChild(figuresRow);
     panel.appendChild(compareWrap);
 
     var fundingLabel = document.createElement("div");
