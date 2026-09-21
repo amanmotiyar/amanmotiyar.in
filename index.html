@@ -2664,7 +2664,10 @@
     dateInp.type = "date"; dateInp.value = h.asOfDate || todayISO();
     dateInp.style.background = "transparent"; dateInp.style.border = "none"; dateInp.style.borderBottom = "1px solid var(--line)";
     dateInp.style.color = "var(--ink)"; dateInp.style.fontFamily = "'JetBrains Mono', monospace"; dateInp.style.fontSize = "11.5px";
-    dateInp.addEventListener("change", function(){ h.asOfDate = dateInp.value; scheduleSave(); });
+    dateInp.addEventListener("change", function(){
+      if(!isPlausibleDateValue(dateInp.value)){ dateInp.value = h.asOfDate || todayISO(); return; }
+      h.asOfDate = dateInp.value; scheduleSave();
+    });
     dateCell.appendChild(dateInp);
     row.appendChild(dateCell);
 
@@ -3243,7 +3246,10 @@
     dateInp.type = "date"; dateInp.value = g.targetDate || "";
     dateInp.style.background = "transparent"; dateInp.style.border = "none"; dateInp.style.borderBottom = "1px solid var(--line)";
     dateInp.style.color = "var(--ink)"; dateInp.style.fontFamily = "'JetBrains Mono', monospace"; dateInp.style.fontSize = "11.5px";
-    dateInp.addEventListener("change", function(){ g.targetDate = dateInp.value; scheduleSave(); renderMain(); });
+    dateInp.addEventListener("change", function(){
+      if(!isPlausibleDateValue(dateInp.value)){ dateInp.value = g.targetDate || ""; return; }
+      g.targetDate = dateInp.value; scheduleSave(); renderMain();
+    });
     dateCell.appendChild(dateInp);
     row.appendChild(dateCell);
 
@@ -3942,6 +3948,21 @@
     return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
   }
 
+  // Some mobile date pickers can fire a "change" event mid-entry, before all
+  // four digits of the year are typed (e.g. "0020" instead of "2020"). Since
+  // several date fields re-render immediately on change (to re-sort the
+  // timeline), a premature event like that would otherwise get saved and
+  // displayed as-is. This rejects anything outside a plausible employment-era
+  // year range; the field simply reverts to its last good value instead.
+  function isPlausibleDateValue(v){
+    if(!v) return true;
+    var m = v.match(/^(\d{4})-\d{2}-\d{2}$/);
+    if(!m) return false;
+    var year = parseInt(m[1], 10);
+    var maxYear = new Date().getFullYear() + 1;
+    return year >= 1900 && year <= maxYear;
+  }
+
   function formatEmploymentDuration(startDate, endDate){
     if(!startDate) return "";
     var start = new Date(startDate + "T00:00:00");
@@ -4066,7 +4087,10 @@
     var startCtl = document.createElement("div"); startCtl.className = "fin-ctl";
     startCtl.innerHTML = "<label>Start date</label>";
     var startInp = styledDateInput(emp.startDate);
-    startInp.addEventListener("change", function(){ emp.startDate = startInp.value; scheduleSave(); renderMain(); });
+    startInp.addEventListener("change", function(){
+      if(!isPlausibleDateValue(startInp.value)){ startInp.value = emp.startDate || ""; return; }
+      emp.startDate = startInp.value; scheduleSave(); renderMain();
+    });
     startCtl.appendChild(startInp);
     datesRow.appendChild(startCtl);
 
@@ -4074,7 +4098,10 @@
     endCtl.innerHTML = "<label>End date</label>";
     var endInp = styledDateInput(emp.endDate);
     endInp.disabled = !emp.endDate;
-    endInp.addEventListener("change", function(){ emp.endDate = endInp.value; scheduleSave(); renderMain(); });
+    endInp.addEventListener("change", function(){
+      if(!isPlausibleDateValue(endInp.value)){ endInp.value = emp.endDate || ""; return; }
+      emp.endDate = endInp.value; scheduleSave(); renderMain();
+    });
     endCtl.appendChild(endInp);
     var currentLabel = document.createElement("label");
     currentLabel.style.cssText = "display:flex; align-items:center; gap:4px; font-size:10px; color:var(--faint); margin-top:4px;";
@@ -4154,13 +4181,19 @@
 
     var startCell = document.createElement("td");
     var startInp = styledDateInput(role.startDate);
-    startInp.addEventListener("change", function(){ role.startDate = startInp.value; scheduleSave(); renderMain(); });
+    startInp.addEventListener("change", function(){
+      if(!isPlausibleDateValue(startInp.value)){ startInp.value = role.startDate || ""; return; }
+      role.startDate = startInp.value; scheduleSave(); renderMain();
+    });
     startCell.appendChild(startInp);
     row.appendChild(startCell);
 
     var endCell = document.createElement("td");
     var endInp = styledDateInput(role.endDate);
-    endInp.addEventListener("change", function(){ role.endDate = endInp.value; scheduleSave(); renderMain(); });
+    endInp.addEventListener("change", function(){
+      if(!isPlausibleDateValue(endInp.value)){ endInp.value = role.endDate || ""; return; }
+      role.endDate = endInp.value; scheduleSave(); renderMain();
+    });
     endInp.disabled = !role.endDate;
     endCell.appendChild(endInp);
     var currentLabel = document.createElement("label");
@@ -4336,7 +4369,10 @@
 
     var dateCell = document.createElement("td");
     var dateInp = styledDateInput(ach.date);
-    dateInp.addEventListener("change", function(){ ach.date = dateInp.value; scheduleSave(); renderMain(); });
+    dateInp.addEventListener("change", function(){
+      if(!isPlausibleDateValue(dateInp.value)){ dateInp.value = ach.date || ""; return; }
+      ach.date = dateInp.value; scheduleSave(); renderMain();
+    });
     dateCell.appendChild(dateInp);
     row.appendChild(dateCell);
 
@@ -4439,7 +4475,10 @@
     row.appendChild(ctl("Goal", nameInp));
 
     var dateInp = styledDateInput(g.targetDate);
-    dateInp.addEventListener("change", function(){ g.targetDate = dateInp.value; scheduleSave(); });
+    dateInp.addEventListener("change", function(){
+      if(!isPlausibleDateValue(dateInp.value)){ dateInp.value = g.targetDate || ""; return; }
+      g.targetDate = dateInp.value; scheduleSave();
+    });
     row.appendChild(ctl("Target date", dateInp));
 
     var statusSel = document.createElement("select");
