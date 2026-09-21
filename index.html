@@ -557,11 +557,38 @@
 
   /* ---------------- dreams & goals ---------------- */
 
+  function goalCurrentAllocated(g){
+    return (g.fundingEntries || []).reduce(function(s,e){ return s + (parseFloat(e.amount) || 0); }, 0);
+  }
+
+  function goalMonthsUntilTarget(targetDate){
+    if(!targetDate) return null;
+    var target = new Date(targetDate + "T00:00:00");
+    if(isNaN(target.getTime())) return null;
+    var now = new Date();
+    var months = (target.getFullYear() - now.getFullYear()) * 12 + (target.getMonth() - now.getMonth());
+    if(target.getDate() < now.getDate()) months -= 1;
+    return months;
+  }
+
+  // Never inflates the funding total with anything the user didn't explicitly
+  // log -- no cash, investments, property equity, or forecast surplus is ever
+  // pulled in here.
+  function goalRequiredMonthly(g){
+    var alloc = goalCurrentAllocated(g);
+    var est = parseFloat(g.estimatedAmount) || 0;
+    var remaining = est - alloc;
+    if(remaining <= 0) return { status: "funded", remaining: remaining, value: 0 };
+    var months = goalMonthsUntilTarget(g.targetDate);
+    if(months === null) return { status: "no-date", remaining: remaining, value: null };
+    if(months <= 0) return { status: "overdue", remaining: remaining, value: null };
+    return { status: "ok", remaining: remaining, value: remaining / months, months: months };
+  }
+
   function goalTotals(){
-    var financial = state.goals.filter(function(g){ return g.type === "financial"; });
-    var estimated = financial.reduce(function(s,g){ return s + (parseFloat(g.estimatedAmount) || 0); }, 0);
-    var allocated = financial.reduce(function(s,g){ return s + (parseFloat(g.allocatedAmount) || 0); }, 0);
-    return { estimated:estimated, allocated:allocated, remaining:estimated - allocated, count:state.goals.length, financialCount:financial.length };
+    var estimated = state.goals.reduce(function(s,g){ return s + (parseFloat(g.estimatedAmount) || 0); }, 0);
+    var allocated = state.goals.reduce(function(s,g){ return s + goalCurrentAllocated(g); }, 0);
+    return { estimated:estimated, allocated:allocated, remaining:estimated - allocated, count:state.goals.length };
   }
 
   function goalDateStatus(g){
@@ -921,7 +948,30 @@
       base.professional.goals = Array.isArray(parsed.professional.goals) ? parsed.professional.goals : [];
       base.professional.reviews = (parsed.professional.reviews && typeof parsed.professional.reviews === "object") ? parsed.professional.reviews : {};
     }
-    base.goals = Array.isArray(parsed.goals) ? parsed.goals : [];
+    base.goals = (Array.isArray(parsed.goals) ? parsed.goals : []).map(function(g){
+      var out = {
+        id: g.id || uid(),
+        name: g.name || "",
+        description: g.description || "",
+        category: g.category || "",
+        targetDate: g.targetDate || "",
+        estimatedAmount: parseFloat(g.estimatedAmount) || 0,
+        priority: g.priority || "Medium",
+        status: g.status || "Not started",
+        plannedMonthlyContribution: parseFloat(g.plannedMonthlyContribution) || 0,
+        fundingEntries: Array.isArray(g.fundingEntries) ? g.fundingEntries : [],
+        milestones: Array.isArray(g.milestones) ? g.milestones : [],
+        notes: g.notes || ""
+      };
+      // One-time migration: a dream saved under the old model had a single
+      // directly-set allocatedAmount instead of funding history. Only runs
+      // when there's no funding history yet, so it never re-fires or
+      // double-counts on later loads once migrated.
+      if(!out.fundingEntries.length && g.allocatedAmount && parseFloat(g.allocatedAmount) !== 0){
+        out.fundingEntries.push({ id: uid(), date: "", amount: parseFloat(g.allocatedAmount), note: "Migrated from previous allocated amount" });
+      }
+      return out;
+    });
     return base;
   }
   function loadState(){
@@ -3140,12 +3190,12 @@
   function buildGoals(view){
     view.innerHTML =
       '<div class="focus-eyebrow">DREAMS &amp; GOALS &middot; AMETHYST</div>' +
-      '<div class="focus-title" style="font-size:36px; margin-bottom:10px;">Goal tracker</div>';
+      '<div class="focus-title" style="font-size:36px; margin-bottom:10px;">Major Financial Dreams</div>';
 
     var intro = document.createElement("p");
     intro.className = "hero-loop";
     intro.style.marginBottom = "24px";
-    intro.textContent = "Allocated amounts are always what you type here \u2014 nothing is pulled automatically from your bank balance, investments, property equity, or forecast surplus.";
+    intro.textContent = "Major personal dreams that need real money \u2014 not employment goals (see Professional), routine expenses, or everyday habits. Allocated amounts here are always what you log by hand, in the funding history below each dream \u2014 nothing is pulled automatically from cash, investments, property equity, net worth, or a forecast surplus.";
     view.appendChild(intro);
 
     var summary = document.createElement("div");
@@ -3166,45 +3216,36 @@
           : (s.days + " day" + (s.days === 1 ? "" : "s") + " until target date");
         row.innerHTML =
           '<span class="dot" style="background:' + (s.level === "overdue" ? GOALS_OVERDUE_COLOR : GOALS_ATTENTION_COLOR) + '"></span>' +
-          '<span class="a-name">' + escapeHtml(g.name || "(unnamed goal)") + '</span>' +
+          '<span class="a-name">' + escapeHtml(g.name || "(unnamed dream)") + '</span>' +
           '<span class="a-text">' + text + '</span>';
         flagSection.appendChild(row);
       });
       view.appendChild(flagSection);
     }
 
-    var tableSection = document.createElement("div");
-    tableSection.className = "fin-section";
-    tableSection.innerHTML = '<h2 class="sec-title">All goals</h2>';
-    var tableWrap = document.createElement("div");
-    tableWrap.className = "fin-table-wrap";
-    var table = document.createElement("table");
-    table.className = "fin-table";
-    table.innerHTML =
-      '<thead><tr><th>Goal</th><th>Target Date</th><th>Type</th><th>Priority</th><th>Estimated</th><th>Allocated</th>' +
-      '<th>Remaining</th><th>Progress</th><th>Notes</th><th></th></tr></thead>';
-    var tbody = document.createElement("tbody");
-    table.appendChild(tbody);
-    tableWrap.appendChild(table);
-    tableSection.appendChild(tableWrap);
+    var section = document.createElement("div");
+    section.className = "fin-section";
+    section.innerHTML = '<h2 class="sec-title">All dreams</h2>';
 
     if(!state.goals.length){
       var empty = document.createElement("p");
       empty.className = "empty";
-      empty.style.marginTop = "14px";
-      empty.textContent = "No goals yet \u2014 add your first one below.";
-      tableSection.appendChild(empty);
+      empty.textContent = "No dreams yet \u2014 add your first one below.";
+      section.appendChild(empty);
     }
-    view.appendChild(tableSection);
-
-    state.goals.forEach(function(g){ tbody.appendChild(buildGoalRow(g)); });
+    state.goals.forEach(function(g){ section.appendChild(buildDreamCard(g)); });
+    view.appendChild(section);
 
     var addBtn = document.createElement("button");
     addBtn.className = "add-chip";
     addBtn.style.marginTop = "14px";
-    addBtn.textContent = "+ add goal";
+    addBtn.textContent = "+ add dream";
     addBtn.addEventListener("click", function(){
-      state.goals.push({ id:uid(), name:"", targetDate:"", type:"financial", estimatedAmount:0, allocatedAmount:0, priority:"Medium", notes:"" });
+      state.goals.push({
+        id: uid(), name: "", description: "", category: "", targetDate: "",
+        estimatedAmount: 0, priority: "Medium", status: "Not started",
+        plannedMonthlyContribution: 0, fundingEntries: [], milestones: [], notes: ""
+      });
       scheduleSave();
       renderMain();
     });
@@ -3227,39 +3268,58 @@
     return inp;
   }
 
-  function buildGoalRow(g){
-    var row = document.createElement("tr");
-    row.className = "fin-row";
-    row.id = "goal-row-" + g.id;
+  function buildDreamCard(g){
+    var card = document.createElement("div");
+    card.style.cssText = "border:1px solid var(--line); border-radius:12px; padding:20px 22px; margin-bottom:22px;";
 
-    var nameCell = document.createElement("td");
-    var nameInp = smallTextInput(g.name, "Goal name", 150);
+    function ctl(labelText, el){
+      var c = document.createElement("div"); c.className = "fin-ctl";
+      var l = document.createElement("label"); l.textContent = labelText;
+      c.appendChild(l); c.appendChild(el);
+      return c;
+    }
+
+    var headerRow = document.createElement("div");
+    headerRow.style.cssText = "display:flex; align-items:center; gap:12px; margin-bottom:14px;";
+    var nameInp = document.createElement("input");
+    nameInp.type = "text"; nameInp.placeholder = "Dream name"; nameInp.value = g.name || "";
+    nameInp.style.cssText = "flex:1; background:transparent; border:none; border-bottom:1px solid var(--line); color:var(--ink); font-family:'Cormorant Garamond',serif; font-size:22px; padding:4px 2px;";
     nameInp.addEventListener("input", function(){ g.name = nameInp.value; scheduleSave(); });
-    nameCell.appendChild(nameInp);
-    row.appendChild(nameCell);
-
-    var dateCell = document.createElement("td");
-    var dateInp = document.createElement("input");
-    dateInp.type = "date"; dateInp.value = g.targetDate || "";
-    dateInp.style.background = "transparent"; dateInp.style.border = "none"; dateInp.style.borderBottom = "1px solid var(--line)";
-    dateInp.style.color = "var(--ink)"; dateInp.style.fontFamily = "'JetBrains Mono', monospace"; dateInp.style.fontSize = "11.5px";
-    dateInp.addEventListener("change", function(){ g.targetDate = dateInp.value; scheduleSave(); renderMain(); });
-    dateCell.appendChild(dateInp);
-    row.appendChild(dateCell);
-
-    var typeCell = document.createElement("td");
-    var typeSel = document.createElement("select");
-    typeSel.className = "fin-select";
-    [["financial","Financial"], ["nonfinancial","Non-financial"]].forEach(function(p){
-      var o = document.createElement("option"); o.value = p[0]; o.textContent = p[1];
-      if(g.type === p[0]) o.selected = true;
-      typeSel.appendChild(o);
+    headerRow.appendChild(nameInp);
+    var rmBtn = document.createElement("button");
+    rmBtn.className = "s-remove"; rmBtn.textContent = "\u00d7"; rmBtn.title = "Remove dream";
+    rmBtn.addEventListener("click", function(){
+      if(!confirm("Remove this dream? This can't be undone.")) return;
+      state.goals = state.goals.filter(function(x){ return x.id !== g.id; });
+      scheduleSave(); renderMain();
     });
-    typeSel.addEventListener("change", function(){ g.type = typeSel.value; scheduleSave(); renderMain(); });
-    typeCell.appendChild(typeSel);
-    row.appendChild(typeCell);
+    headerRow.appendChild(rmBtn);
+    card.appendChild(headerRow);
 
-    var prioCell = document.createElement("td");
+    var descTa = document.createElement("textarea");
+    descTa.value = g.description || ""; descTa.rows = 2; descTa.placeholder = "What is this dream, in a sentence or two?";
+    descTa.style.cssText = "width:100%; background:transparent; border:1px solid var(--line); border-radius:8px; color:var(--ink); padding:8px 10px; font-family:inherit; font-size:13px; margin-bottom:16px;";
+    descTa.addEventListener("input", function(){ g.description = descTa.value; scheduleSave(); });
+    card.appendChild(descTa);
+
+    var row1 = document.createElement("div");
+    row1.className = "fin-controls";
+    row1.style.marginBottom = "16px";
+
+    var catInp = smallTextInput(g.category, "e.g. Travel, Home", 160);
+    catInp.addEventListener("input", function(){ g.category = catInp.value; scheduleSave(); });
+    row1.appendChild(ctl("Category", catInp));
+
+    var dateInp = document.createElement("input");
+    dateInp.type = "date"; dateInp.value = g.targetDate || ""; dateInp.className = "fin-select";
+    var dreamDateRenderTimer = null;
+    dateInp.addEventListener("change", function(){
+      g.targetDate = dateInp.value; scheduleSave();
+      clearTimeout(dreamDateRenderTimer);
+      dreamDateRenderTimer = setTimeout(renderMain, 800);
+    });
+    row1.appendChild(ctl("Target date", dateInp));
+
     var prioSel = document.createElement("select");
     prioSel.className = "fin-select";
     ["High","Medium","Low"].forEach(function(p){
@@ -3268,79 +3328,234 @@
       prioSel.appendChild(o);
     });
     prioSel.addEventListener("change", function(){ g.priority = prioSel.value; scheduleSave(); });
-    prioCell.appendChild(prioSel);
-    row.appendChild(prioCell);
+    row1.appendChild(ctl("Priority", prioSel));
 
-    var estCell = document.createElement("td");
-    var allocCell = document.createElement("td");
-    if(g.type === "financial"){
-      var estInp = smallNumberInput(g.estimatedAmount, 100);
-      estInp.addEventListener("input", function(){
-        g.estimatedAmount = parseFloat(estInp.value) || 0;
-        scheduleSave(); updateGoalRow(g.id); refreshGoalsSummary();
-      });
-      estCell.appendChild(estInp);
+    var statusSel = document.createElement("select");
+    statusSel.className = "fin-select";
+    ["Not started","In progress","Achieved","On hold"].forEach(function(s){
+      var o = document.createElement("option"); o.value = s; o.textContent = s;
+      if(g.status === s) o.selected = true;
+      statusSel.appendChild(o);
+    });
+    statusSel.addEventListener("change", function(){ g.status = statusSel.value; scheduleSave(); });
+    row1.appendChild(ctl("Status", statusSel));
 
-      var allocInp = smallNumberInput(g.allocatedAmount, 100);
-      allocInp.addEventListener("input", function(){
-        g.allocatedAmount = parseFloat(allocInp.value) || 0;
-        scheduleSave(); updateGoalRow(g.id); refreshGoalsSummary();
-      });
-      allocCell.appendChild(allocInp);
-    }else{
-      estCell.textContent = "\u2014";
-      allocCell.textContent = "\u2014";
+    var estInp = smallNumberInput(g.estimatedAmount, 120);
+    estInp.addEventListener("input", function(){
+      g.estimatedAmount = parseFloat(estInp.value) || 0;
+      scheduleSave(); refreshDreamFundingPanel(g.id); refreshGoalsSummary();
+    });
+    row1.appendChild(ctl("Estimated total cost", estInp));
+
+    var plannedInp = smallNumberInput(g.plannedMonthlyContribution, 120);
+    plannedInp.addEventListener("input", function(){
+      g.plannedMonthlyContribution = parseFloat(plannedInp.value) || 0;
+      scheduleSave(); refreshDreamFundingPanel(g.id);
+    });
+    row1.appendChild(ctl("Planned monthly contribution", plannedInp));
+
+    card.appendChild(row1);
+
+    var fundingPanel = document.createElement("div");
+    fundingPanel.id = "dream-funding-" + g.id;
+    card.appendChild(fundingPanel);
+    renderDreamFundingPanel(g, fundingPanel);
+
+    var msLabel = document.createElement("div");
+    msLabel.style.cssText = "font-size:10.5px; letter-spacing:0.06em; color:var(--faint); margin:20px 0 10px; font-family:'JetBrains Mono',monospace;";
+    msLabel.textContent = "MILESTONES";
+    card.appendChild(msLabel);
+
+    if(!g.milestones.length){
+      var msEmpty = document.createElement("p");
+      msEmpty.className = "empty";
+      msEmpty.style.cssText = "font-size:12.5px; margin-bottom:10px;";
+      msEmpty.textContent = "No milestones yet.";
+      card.appendChild(msEmpty);
     }
-    row.appendChild(estCell);
-    row.appendChild(allocCell);
+    g.milestones.slice().sort(function(a,b){
+      var as = a.targetDate || "", bs = b.targetDate || "";
+      if(as && bs) return as.localeCompare(bs);
+      if(as) return -1;
+      if(bs) return 1;
+      return 0;
+    }).forEach(function(ms){
+      var msRow = document.createElement("div");
+      msRow.style.cssText = "display:flex; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap;";
 
-    var remCell = document.createElement("td");
-    remCell.id = "goal-remaining-" + g.id;
-    row.appendChild(remCell);
+      var check = document.createElement("input");
+      check.type = "checkbox"; check.checked = !!ms.completed;
+      check.addEventListener("change", function(){ ms.completed = check.checked; scheduleSave(); renderMain(); });
+      msRow.appendChild(check);
 
-    var progCell = document.createElement("td");
-    progCell.id = "goal-progress-" + g.id;
-    row.appendChild(progCell);
+      var msText = document.createElement("input");
+      msText.type = "text"; msText.value = ms.text || ""; msText.placeholder = "Milestone";
+      msText.style.cssText = "flex:1 1 200px; background:transparent; border:none; border-bottom:1px solid var(--line); color:var(--ink); padding:3px 2px; font-size:13px;" + (ms.completed ? " text-decoration:line-through; opacity:0.6;" : "");
+      msText.addEventListener("input", function(){ ms.text = msText.value; scheduleSave(); });
+      msRow.appendChild(msText);
 
-    var notesCell = document.createElement("td");
-    var notesInp = smallTextInput(g.notes, "Notes", 160);
-    notesInp.addEventListener("input", function(){ g.notes = notesInp.value; scheduleSave(); });
-    notesCell.appendChild(notesInp);
-    row.appendChild(notesCell);
+      var msDate = document.createElement("input");
+      msDate.type = "date"; msDate.value = ms.targetDate || "";
+      msDate.style.cssText = "background:transparent; border:none; border-bottom:1px solid var(--line); color:var(--ink); font-family:'JetBrains Mono',monospace; font-size:11px;";
+      var msDateRenderTimer = null;
+      msDate.addEventListener("change", function(){
+        ms.targetDate = msDate.value; scheduleSave();
+        clearTimeout(msDateRenderTimer);
+        msDateRenderTimer = setTimeout(renderMain, 800);
+      });
+      msRow.appendChild(msDate);
+
+      var msRm = document.createElement("button");
+      msRm.className = "s-remove"; msRm.textContent = "\u00d7"; msRm.title = "Remove milestone";
+      msRm.addEventListener("click", function(){
+        g.milestones = g.milestones.filter(function(x){ return x.id !== ms.id; });
+        scheduleSave(); renderMain();
+      });
+      msRow.appendChild(msRm);
+
+      card.appendChild(msRow);
+    });
+    var addMsBtn = document.createElement("button");
+    addMsBtn.className = "add-chip";
+    addMsBtn.style.marginTop = "6px";
+    addMsBtn.textContent = "+ add milestone";
+    addMsBtn.addEventListener("click", function(){
+      g.milestones.push({ id: uid(), text: "", targetDate: "", completed: false });
+      scheduleSave(); renderMain();
+    });
+    card.appendChild(addMsBtn);
+
+    var notesLabel = document.createElement("label");
+    notesLabel.style.cssText = "display:block; font-size:11px; color:var(--faint); margin:18px 0 6px;";
+    notesLabel.textContent = "Notes";
+    card.appendChild(notesLabel);
+    var notesTa = document.createElement("textarea");
+    notesTa.value = g.notes || ""; notesTa.rows = 2;
+    notesTa.style.cssText = "width:100%; background:transparent; border:1px solid var(--line); border-radius:8px; color:var(--ink); padding:8px 10px; font-family:inherit; font-size:13px;";
+    notesTa.addEventListener("input", function(){ g.notes = notesTa.value; scheduleSave(); });
+    card.appendChild(notesTa);
+
+    return card;
+  }
+
+  function refreshDreamFundingPanel(id){
+    var g = state.goals.find(function(x){ return x.id === id; });
+    var panel = document.getElementById("dream-funding-" + id);
+    if(g && panel) renderDreamFundingPanel(g, panel);
+  }
+
+  function renderDreamFundingPanel(g, panel){
+    panel.innerHTML = "";
+    var alloc = goalCurrentAllocated(g);
+    var est = parseFloat(g.estimatedAmount) || 0;
+    var remaining = est - alloc;
+    var pctFunded = est > 0 ? (alloc / est * 100) : null;
+    var req = goalRequiredMonthly(g);
+
+    var statsWrap = document.createElement("div");
+    statsWrap.className = "fin-summary";
+    statsWrap.style.marginBottom = "14px";
+    var stats = [
+      ["Currently allocated (from funding history below)", fmtINRz(alloc)],
+      ["Remaining needed", fmtINRz(remaining < 0 ? 0 : remaining)],
+      ["Percent funded", pctFunded === null ? "\u2014" : fmtPctz(pctFunded)]
+    ];
+    stats.forEach(function(s){
+      var card = document.createElement("div");
+      card.className = "fin-card";
+      card.innerHTML = '<div class="fc-label">' + s[0] + '</div><div class="fc-value">' + s[1] + '</div>';
+      statsWrap.appendChild(card);
+    });
+    panel.appendChild(statsWrap);
+
+    var compareWrap = document.createElement("div");
+    compareWrap.style.cssText = "display:flex; gap:22px; flex-wrap:wrap; margin-bottom:18px; font-size:13px;";
+    var plannedText = "<strong>Your planned contribution:</strong> " + fmtINRz(g.plannedMonthlyContribution || 0) + " / month";
+    var requiredText;
+    if(req.status === "funded") requiredText = "<strong>Required to reach target:</strong> already fully funded";
+    else if(req.status === "no-date") requiredText = "<strong>Required to reach target:</strong> \u2014 (set a target date)";
+    else if(req.status === "overdue") requiredText = "<strong>Required to reach target:</strong> target date has passed, " + fmtINRz(remaining) + " still needed";
+    else requiredText = "<strong>Required to reach target:</strong> " + fmtINRz(req.value) + " / month (over " + req.months + " month" + (req.months === 1 ? "" : "s") + ")";
+    compareWrap.innerHTML = "<div>" + plannedText + "</div><div>" + requiredText + "</div>";
+    panel.appendChild(compareWrap);
+
+    var fundingLabel = document.createElement("div");
+    fundingLabel.style.cssText = "font-size:10.5px; letter-spacing:0.06em; color:var(--faint); margin-bottom:10px; font-family:'JetBrains Mono',monospace;";
+    fundingLabel.textContent = "FUNDING HISTORY";
+    panel.appendChild(fundingLabel);
+
+    var tableWrap = document.createElement("div");
+    tableWrap.className = "fin-table-wrap";
+    var table = document.createElement("table");
+    table.className = "fin-table";
+    table.innerHTML = "<thead><tr><th>Date</th><th>Amount (+ add, - withdraw)</th><th>Note</th><th></th></tr></thead>";
+    var tbody = document.createElement("tbody");
+    if(!g.fundingEntries.length){
+      var trEmpty = document.createElement("tr");
+      trEmpty.innerHTML = '<td colspan="4" class="empty" style="padding:10px 0;">No funding entries yet \u2014 allocated is \u20b90 until you add one.</td>';
+      tbody.appendChild(trEmpty);
+    }
+    g.fundingEntries.slice().sort(function(a,b){ return (a.date||"").localeCompare(b.date||""); }).forEach(function(fe){
+      tbody.appendChild(buildFundingEntryRow(g, fe));
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    panel.appendChild(tableWrap);
+
+    var addFundBtn = document.createElement("button");
+    addFundBtn.className = "add-chip";
+    addFundBtn.style.marginTop = "10px";
+    addFundBtn.textContent = "+ add funding entry";
+    addFundBtn.addEventListener("click", function(){
+      g.fundingEntries.push({ id: uid(), date: todayISO(), amount: 0, note: "" });
+      scheduleSave(); refreshDreamFundingPanel(g.id); refreshGoalsSummary();
+    });
+    panel.appendChild(addFundBtn);
+  }
+
+  function buildFundingEntryRow(g, fe){
+    var row = document.createElement("tr");
+    row.className = "fin-row";
+
+    var dateCell = document.createElement("td");
+    var dateInp = document.createElement("input");
+    dateInp.type = "date"; dateInp.value = fe.date || "";
+    dateInp.style.cssText = "background:transparent;border:none;border-bottom:1px solid var(--line);color:var(--ink);font-family:'JetBrains Mono', monospace;font-size:11.5px;";
+    var feDateRenderTimer = null;
+    dateInp.addEventListener("change", function(){
+      fe.date = dateInp.value; scheduleSave();
+      clearTimeout(feDateRenderTimer);
+      feDateRenderTimer = setTimeout(function(){ refreshDreamFundingPanel(g.id); refreshGoalsSummary(); }, 800);
+    });
+    dateCell.appendChild(dateInp);
+    row.appendChild(dateCell);
+
+    var amtCell = document.createElement("td");
+    var amtInp = smallNumberInput(fe.amount, 110);
+    amtInp.addEventListener("input", function(){
+      fe.amount = parseFloat(amtInp.value) || 0;
+      scheduleSave(); refreshDreamFundingPanel(g.id); refreshGoalsSummary();
+    });
+    amtCell.appendChild(amtInp);
+    row.appendChild(amtCell);
+
+    var noteCell = document.createElement("td");
+    var noteInp = smallTextInput(fe.note, "e.g. Monthly SIP, gift", 180);
+    noteInp.addEventListener("input", function(){ fe.note = noteInp.value; scheduleSave(); });
+    noteCell.appendChild(noteInp);
+    row.appendChild(noteCell);
 
     var rmCell = document.createElement("td");
     var rmBtn = document.createElement("button");
-    rmBtn.className = "s-remove"; rmBtn.type = "button"; rmBtn.textContent = "\u00d7";
+    rmBtn.className = "s-remove"; rmBtn.textContent = "\u00d7"; rmBtn.title = "Remove entry";
     rmBtn.addEventListener("click", function(){
-      state.goals = state.goals.filter(function(x){ return x.id !== g.id; });
-      scheduleSave();
-      renderMain();
+      g.fundingEntries = g.fundingEntries.filter(function(x){ return x.id !== fe.id; });
+      scheduleSave(); refreshDreamFundingPanel(g.id); refreshGoalsSummary();
     });
     rmCell.appendChild(rmBtn);
     row.appendChild(rmCell);
 
-    setTimeout(function(){ updateGoalRow(g.id); }, 0);
     return row;
-  }
-
-  function updateGoalRow(id){
-    var g = state.goals.find(function(x){ return x.id === id; });
-    var remEl = document.getElementById("goal-remaining-" + id);
-    var progEl = document.getElementById("goal-progress-" + id);
-    if(!g || g.type !== "financial"){
-      if(remEl) remEl.textContent = "\u2014";
-      if(progEl) progEl.textContent = "\u2014";
-      return;
-    }
-    var est = parseFloat(g.estimatedAmount) || 0;
-    var alloc = parseFloat(g.allocatedAmount) || 0;
-    var remaining = est - alloc;
-    var progress = est !== 0 ? (alloc / est * 100) : 0;
-    if(remEl){
-      remEl.textContent = fmtINRz(remaining);
-      remEl.style.color = remaining < 0 ? GOALS_ACCENT : "inherit";
-    }
-    if(progEl) progEl.textContent = fmtPctz(progress);
   }
 
   function refreshGoalsSummary(){
@@ -3354,10 +3569,10 @@
     var summary = document.createElement("div");
     summary.className = "fin-summary";
     [
-      ["Goals tracked", t.count + " (" + t.financialCount + " financial)"],
-      ["Total estimated", fmtINRz(t.estimated)],
-      ["Total allocated", fmtINRz(t.allocated)],
-      ["Total remaining", fmtINRz(t.remaining)]
+      ["Dreams tracked", String(t.count)],
+      ["Total estimated cost", fmtINRz(t.estimated)],
+      ["Total allocated (all dreams combined)", fmtINRz(t.allocated)],
+      ["Total still needed", fmtINRz(t.remaining)]
     ].forEach(function(c){
       var card = document.createElement("div");
       card.className = "fin-card";
@@ -3365,6 +3580,14 @@
       summary.appendChild(card);
     });
     container.appendChild(summary);
+
+    if(state.goals.length > 1 && t.allocated > 0){
+      var note = document.createElement("p");
+      note.className = "empty";
+      note.style.cssText = "margin-top:10px; font-size:12px;";
+      note.textContent = "This total is simply the sum of what you've logged per dream. If the same money could apply to more than one dream, that overlap isn't detected or removed here \u2014 it's worth double-checking that total against what you actually have available.";
+      container.appendChild(note);
+    }
   }
 
   /* ---------------- medical report tracker (health tab, phase 1) ---------------- */
