@@ -3341,16 +3341,22 @@
     row1.appendChild(ctl("Status", statusSel));
 
     var estInp = smallNumberInput(g.estimatedAmount, 120);
+    var estRefreshTimer = null;
     estInp.addEventListener("input", function(){
       g.estimatedAmount = parseFloat(estInp.value) || 0;
-      scheduleSave(); refreshDreamFundingPanel(g.id); refreshGoalsSummary();
+      scheduleSave();
+      clearTimeout(estRefreshTimer);
+      estRefreshTimer = setTimeout(function(){ refreshDreamFundingPanel(g.id); refreshGoalsSummary(); }, 600);
     });
     row1.appendChild(ctl("Estimated total cost", estInp));
 
     var plannedInp = smallNumberInput(g.plannedMonthlyContribution, 120);
+    var plannedRefreshTimer = null;
     plannedInp.addEventListener("input", function(){
       g.plannedMonthlyContribution = parseFloat(plannedInp.value) || 0;
-      scheduleSave(); refreshDreamFundingPanel(g.id);
+      scheduleSave();
+      clearTimeout(plannedRefreshTimer);
+      plannedRefreshTimer = setTimeout(function(){ refreshDreamFundingPanel(g.id); }, 600);
     });
     row1.appendChild(ctl("Planned monthly contribution", plannedInp));
 
@@ -3532,9 +3538,12 @@
 
     var amtCell = document.createElement("td");
     var amtInp = smallNumberInput(fe.amount, 110);
+    var amtRefreshTimer = null;
     amtInp.addEventListener("input", function(){
       fe.amount = parseFloat(amtInp.value) || 0;
-      scheduleSave(); refreshDreamFundingPanel(g.id); refreshGoalsSummary();
+      scheduleSave();
+      clearTimeout(amtRefreshTimer);
+      amtRefreshTimer = setTimeout(function(){ refreshDreamFundingPanel(g.id); refreshGoalsSummary(); }, 600);
     });
     amtCell.appendChild(amtInp);
     row.appendChild(amtCell);
