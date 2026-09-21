@@ -4201,17 +4201,25 @@
 
   function allProfessionalRoleMilestones(){
     var out = [];
+    var skippedEmployers = 0;
     state.professional.employers.forEach(function(emp){
-      emp.roles.forEach(function(role){
-        if(!role.startDate) return; // undated roles are never guessed into a position
-        out.push({
-          id: role.id, employerName: emp.employerName || "(unnamed employer)",
-          jobTitle: role.jobTitle || "(untitled role)", startDate: role.startDate
+      var datedRoles = emp.roles.filter(function(r){ return !!r.startDate; });
+      if(datedRoles.length){
+        datedRoles.forEach(function(role){
+          out.push({ employerName: emp.employerName || "(unnamed employer)", jobTitle: role.jobTitle || "(untitled role)", startDate: role.startDate });
         });
-      });
+      }else if(emp.startDate){
+        // No role has its own start date -- but the employer itself does (this
+        // is how the form is filled in for a single, undivided stint), so use
+        // that instead of showing nothing for this employer.
+        var soleTitle = (emp.roles.length === 1 && emp.roles[0].jobTitle) ? emp.roles[0].jobTitle : null;
+        out.push({ employerName: emp.employerName || "(unnamed employer)", jobTitle: soleTitle, startDate: emp.startDate });
+      }else{
+        skippedEmployers++;
+      }
     });
     out.sort(function(a,b){ return a.startDate.localeCompare(b.startDate); });
-    return out;
+    return { milestones: out, skippedEmployers: skippedEmployers };
   }
 
   function buildProfessionalVisualTimeline(view){
@@ -4222,17 +4230,16 @@
     var intro = document.createElement("p");
     intro.className = "hero-loop";
     intro.style.marginBottom = "24px";
-    intro.textContent = "A visual read of the roles entered in Employment Timeline, earliest first. Add or edit employers and roles there \u2014 this view is generated from that data.";
+    intro.textContent = "A visual read of the employers and roles entered in Employment Timeline, earliest first. Add or edit them there \u2014 this view is generated from that data.";
     section.appendChild(intro);
 
-    var milestones = allProfessionalRoleMilestones();
-    var undatedCount = 0;
-    state.professional.employers.forEach(function(emp){ emp.roles.forEach(function(r){ if(!r.startDate) undatedCount++; }); });
+    var result = allProfessionalRoleMilestones();
+    var milestones = result.milestones;
 
     if(!milestones.length){
       var empty = document.createElement("p");
       empty.className = "empty";
-      empty.textContent = "No dated roles yet \u2014 add an employer and a role with a start date in Employment Timeline to see it here.";
+      empty.textContent = "No dated employment yet \u2014 add an employer with a start date in Employment Timeline to see it here.";
       section.appendChild(empty);
       view.appendChild(section);
       return;
@@ -4258,19 +4265,19 @@
       card.style.borderTopWidth = "3px";
       card.innerHTML =
         '<div class="vtimeline-year" style="color:' + color + ';">' + formatMonthYear(m.startDate) + '</div>' +
-        '<div class="vtimeline-role">' + escapeHtml(m.jobTitle) + '</div>' +
-        '<div class="vtimeline-employer">' + escapeHtml(m.employerName) + '</div>';
+        '<div class="vtimeline-role">' + escapeHtml(m.jobTitle || m.employerName) + '</div>' +
+        (m.jobTitle ? '<div class="vtimeline-employer">' + escapeHtml(m.employerName) + '</div>' : '');
       item.appendChild(card);
 
       vt.appendChild(item);
     });
     section.appendChild(vt);
 
-    if(undatedCount > 0){
+    if(result.skippedEmployers > 0){
       var note = document.createElement("p");
       note.className = "empty";
       note.style.marginTop = "8px";
-      note.textContent = undatedCount + " role" + (undatedCount === 1 ? " has" : "s have") + " no start date, so " + (undatedCount === 1 ? "it isn't" : "they aren't") + " shown here \u2014 add a start date in Employment Timeline to include it.";
+      note.textContent = result.skippedEmployers + " employer" + (result.skippedEmployers === 1 ? " has" : "s have") + " no start date at all (neither on the employer nor on any role), so " + (result.skippedEmployers === 1 ? "it isn't" : "they aren't") + " shown here \u2014 add a start date in Employment Timeline to include " + (result.skippedEmployers === 1 ? "it" : "them") + ".";
       section.appendChild(note);
     }
 
