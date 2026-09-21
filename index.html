@@ -2664,9 +2664,20 @@
     dateInp.type = "date"; dateInp.value = h.asOfDate || todayISO();
     dateInp.style.background = "transparent"; dateInp.style.border = "none"; dateInp.style.borderBottom = "1px solid var(--line)";
     dateInp.style.color = "var(--ink)"; dateInp.style.fontFamily = "'JetBrains Mono', monospace"; dateInp.style.fontSize = "11.5px";
+    var hAsOfTimer = null;
     dateInp.addEventListener("change", function(){
-      if(!isPlausibleDateValue(dateInp.value)){ dateInp.value = h.asOfDate || todayISO(); return; }
-      h.asOfDate = dateInp.value; scheduleSave();
+      var val = dateInp.value;
+      clearTimeout(hAsOfTimer);
+      hAsOfTimer = setTimeout(function(){
+        if(!isPlausibleDateValue(val)){ dateInp.value = h.asOfDate || todayISO(); return; }
+        h.asOfDate = val; scheduleSave();
+      }, 900);
+    });
+    dateInp.addEventListener("blur", function(){
+      clearTimeout(hAsOfTimer);
+      var val = dateInp.value;
+      if(!isPlausibleDateValue(val)){ dateInp.value = h.asOfDate || todayISO(); return; }
+      h.asOfDate = val; scheduleSave();
     });
     dateCell.appendChild(dateInp);
     row.appendChild(dateCell);
@@ -3246,9 +3257,20 @@
     dateInp.type = "date"; dateInp.value = g.targetDate || "";
     dateInp.style.background = "transparent"; dateInp.style.border = "none"; dateInp.style.borderBottom = "1px solid var(--line)";
     dateInp.style.color = "var(--ink)"; dateInp.style.fontFamily = "'JetBrains Mono', monospace"; dateInp.style.fontSize = "11.5px";
+    var goalDateTimer = null;
     dateInp.addEventListener("change", function(){
-      if(!isPlausibleDateValue(dateInp.value)){ dateInp.value = g.targetDate || ""; return; }
-      g.targetDate = dateInp.value; scheduleSave(); renderMain();
+      var val = dateInp.value;
+      clearTimeout(goalDateTimer);
+      goalDateTimer = setTimeout(function(){
+        if(!isPlausibleDateValue(val)){ dateInp.value = g.targetDate || ""; return; }
+        g.targetDate = val; scheduleSave(); renderMain();
+      }, 900);
+    });
+    dateInp.addEventListener("blur", function(){
+      clearTimeout(goalDateTimer);
+      var val = dateInp.value;
+      if(!isPlausibleDateValue(val)){ dateInp.value = g.targetDate || ""; return; }
+      g.targetDate = val; scheduleSave(); renderMain();
     });
     dateCell.appendChild(dateInp);
     row.appendChild(dateCell);
@@ -4087,9 +4109,20 @@
     var startCtl = document.createElement("div"); startCtl.className = "fin-ctl";
     startCtl.innerHTML = "<label>Start date</label>";
     var startInp = styledDateInput(emp.startDate);
+    var empStartTimer = null;
     startInp.addEventListener("change", function(){
-      if(!isPlausibleDateValue(startInp.value)){ startInp.value = emp.startDate || ""; return; }
-      emp.startDate = startInp.value; scheduleSave(); renderMain();
+      var val = startInp.value;
+      clearTimeout(empStartTimer);
+      empStartTimer = setTimeout(function(){
+        if(!isPlausibleDateValue(val)){ startInp.value = emp.startDate || ""; return; }
+        emp.startDate = val; scheduleSave(); renderMain();
+      }, 900);
+    });
+    startInp.addEventListener("blur", function(){
+      clearTimeout(empStartTimer);
+      var val = startInp.value;
+      if(!isPlausibleDateValue(val)){ startInp.value = emp.startDate || ""; return; }
+      emp.startDate = val; scheduleSave(); renderMain();
     });
     startCtl.appendChild(startInp);
     datesRow.appendChild(startCtl);
@@ -4098,9 +4131,20 @@
     endCtl.innerHTML = "<label>End date</label>";
     var endInp = styledDateInput(emp.endDate);
     endInp.disabled = !emp.endDate;
+    var empEndTimer = null;
     endInp.addEventListener("change", function(){
-      if(!isPlausibleDateValue(endInp.value)){ endInp.value = emp.endDate || ""; return; }
-      emp.endDate = endInp.value; scheduleSave(); renderMain();
+      var val = endInp.value;
+      clearTimeout(empEndTimer);
+      empEndTimer = setTimeout(function(){
+        if(!isPlausibleDateValue(val)){ endInp.value = emp.endDate || ""; return; }
+        emp.endDate = val; scheduleSave(); renderMain();
+      }, 900);
+    });
+    endInp.addEventListener("blur", function(){
+      clearTimeout(empEndTimer);
+      var val = endInp.value;
+      if(!isPlausibleDateValue(val)){ endInp.value = emp.endDate || ""; return; }
+      emp.endDate = val; scheduleSave(); renderMain();
     });
     endCtl.appendChild(endInp);
     var currentLabel = document.createElement("label");
@@ -4181,18 +4225,40 @@
 
     var startCell = document.createElement("td");
     var startInp = styledDateInput(role.startDate);
+    var startTimer = null;
     startInp.addEventListener("change", function(){
-      if(!isPlausibleDateValue(startInp.value)){ startInp.value = role.startDate || ""; return; }
-      role.startDate = startInp.value; scheduleSave(); renderMain();
+      var val = startInp.value;
+      clearTimeout(startTimer);
+      startTimer = setTimeout(function(){
+        if(!isPlausibleDateValue(val)){ startInp.value = role.startDate || ""; return; }
+        role.startDate = val; scheduleSave(); renderMain();
+      }, 900);
+    });
+    startInp.addEventListener("blur", function(){
+      clearTimeout(startTimer);
+      var val = startInp.value;
+      if(!isPlausibleDateValue(val)){ startInp.value = role.startDate || ""; return; }
+      role.startDate = val; scheduleSave(); renderMain();
     });
     startCell.appendChild(startInp);
     row.appendChild(startCell);
 
     var endCell = document.createElement("td");
     var endInp = styledDateInput(role.endDate);
+    var endTimer = null;
     endInp.addEventListener("change", function(){
-      if(!isPlausibleDateValue(endInp.value)){ endInp.value = role.endDate || ""; return; }
-      role.endDate = endInp.value; scheduleSave(); renderMain();
+      var val = endInp.value;
+      clearTimeout(endTimer);
+      endTimer = setTimeout(function(){
+        if(!isPlausibleDateValue(val)){ endInp.value = role.endDate || ""; return; }
+        role.endDate = val; scheduleSave(); renderMain();
+      }, 900);
+    });
+    endInp.addEventListener("blur", function(){
+      clearTimeout(endTimer);
+      var val = endInp.value;
+      if(!isPlausibleDateValue(val)){ endInp.value = role.endDate || ""; return; }
+      role.endDate = val; scheduleSave(); renderMain();
     });
     endInp.disabled = !role.endDate;
     endCell.appendChild(endInp);
@@ -4369,9 +4435,20 @@
 
     var dateCell = document.createElement("td");
     var dateInp = styledDateInput(ach.date);
+    var achDateTimer = null;
     dateInp.addEventListener("change", function(){
-      if(!isPlausibleDateValue(dateInp.value)){ dateInp.value = ach.date || ""; return; }
-      ach.date = dateInp.value; scheduleSave(); renderMain();
+      var val = dateInp.value;
+      clearTimeout(achDateTimer);
+      achDateTimer = setTimeout(function(){
+        if(!isPlausibleDateValue(val)){ dateInp.value = ach.date || ""; return; }
+        ach.date = val; scheduleSave(); renderMain();
+      }, 900);
+    });
+    dateInp.addEventListener("blur", function(){
+      clearTimeout(achDateTimer);
+      var val = dateInp.value;
+      if(!isPlausibleDateValue(val)){ dateInp.value = ach.date || ""; return; }
+      ach.date = val; scheduleSave(); renderMain();
     });
     dateCell.appendChild(dateInp);
     row.appendChild(dateCell);
@@ -4475,9 +4552,20 @@
     row.appendChild(ctl("Goal", nameInp));
 
     var dateInp = styledDateInput(g.targetDate);
+    var careerGoalDateTimer = null;
     dateInp.addEventListener("change", function(){
-      if(!isPlausibleDateValue(dateInp.value)){ dateInp.value = g.targetDate || ""; return; }
-      g.targetDate = dateInp.value; scheduleSave();
+      var val = dateInp.value;
+      clearTimeout(careerGoalDateTimer);
+      careerGoalDateTimer = setTimeout(function(){
+        if(!isPlausibleDateValue(val)){ dateInp.value = g.targetDate || ""; return; }
+        g.targetDate = val; scheduleSave();
+      }, 900);
+    });
+    dateInp.addEventListener("blur", function(){
+      clearTimeout(careerGoalDateTimer);
+      var val = dateInp.value;
+      if(!isPlausibleDateValue(val)){ dateInp.value = g.targetDate || ""; return; }
+      g.targetDate = val; scheduleSave();
     });
     row.appendChild(ctl("Target date", dateInp));
 
