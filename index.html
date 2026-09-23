@@ -5452,17 +5452,24 @@
 
   if(window.netlifyIdentity){
     window.netlifyIdentity.on("init", function(user){
-      lastKnownAuthId = user ? user.id : null;
+      var currentId = user ? user.id : null;
+      var isNewSession = currentId !== lastKnownAuthId;
+      lastKnownAuthId = currentId;
       updateAuthUI(user);
-      if(user){ recordLoginTimestamp(); pullFromServer(true); }
+      // Some versions of this widget fire "init" more than once for the same
+      // already-logged-in session; without this check each firing would pop
+      // its own "load from the cloud?" prompt.
+      if(user && isNewSession){ recordLoginTimestamp(); pullFromServer(true); }
     });
     window.netlifyIdentity.on("login", function(user){
-      lastKnownAuthId = user ? user.id : null;
+      var currentId = user ? user.id : null;
+      var isNewSession = currentId !== lastKnownAuthId;
+      lastKnownAuthId = currentId;
       recordLoginTimestamp();
       updateAuthUI(user);
       if(!arrivedViaRecoveryLink){
         window.netlifyIdentity.close();
-        pullFromServer(true);
+        if(isNewSession) pullFromServer(true);
       }
       // If this login came from a recovery/invite/confirmation link, the widget
       // shows its own "set a new password" screen next -- don't compete with it
